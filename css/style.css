@@ -199,3 +199,15 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .ask-text { font-size: 16px; margin: 6px 0 14px; }
 #toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 60; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; max-width: 90vw; text-align: center; }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------- 派網機器人健康檢查 ---------- */
+.f-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.kpi-grid.mini { margin: 10px 0 0; }
+.kpi-grid.mini .kpi { background: var(--card2); box-shadow: none; padding: 8px 10px; }
+.kpi-grid.mini .k-v { font-size: 17px; }
+.reasons.tips { margin-top: 8px; }
+.h-ok { background: var(--accent); color: var(--accent-ink); }
+.h-warn { background: var(--warn); color: #1a1d2b; }
+.h-bad { background: var(--bad); color: #fff; }
+.g-card.live-bad { border: 1px solid var(--bad); }
+.g-card.live-warn { border: 1px solid var(--warn); }

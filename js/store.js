@@ -4,21 +4,22 @@
  *   symbol    'ETHUSDT' | 'BTCUSDT'
  *   theme     'auto' | 'light' | 'dark'
  *   upColor   'red' | 'green'     漲的顏色(台灣習慣紅漲綠跌)
- *   fee       單邊手續費 %(預設以派網 Pionex 0.05 估,保守一點;實際以 App 內費率為準)
+ *   fee       單邊手續費 %(0.02 = 用派網合約網格實單的網格利潤 ÷ 套利次數反推出來的)
  *   funding   回測用的資金費率假設 %/8h(多方付、空方收;約 0.01 是常態)
  *   mmr       維持保證金率 %(強平估算用,ETH/BTC 小倉位約 0.4~0.5)
  *   lev       預設槓桿
  * params    目前試算的網格參數(換頁不會掉)
  *   dir       'long' | 'short' | 'neutral'
  *   mode      'arith'(等差) | 'geo'(等比)
- *   lower / upper / n / capital(保證金 USDT) / lev
- * grids     存下來的網格組合 [{id, name, symbol, dir, mode, lower, upper, n, capital, lev, note, at}]
+ *   lower / upper / n / capital(派網「投資額」USDT) / extra(派網「額外保證金」) / lev
+ * grids     存下來的網格組合 [{id, name, symbol, dir, mode, lower, upper, n, capital, extra, lev, note, at,
+ *             live(true = 派網上正在跑的機器人), open(開單時價格), pxLiq(派網顯示的預估強平價)}]
  */
 const Store = {
   KEY: { settings: 'eg.settings', params: 'eg.params', grids: 'eg.grids' },
 
-  DEFAULT_SETTINGS: { symbol: 'ETHUSDT', theme: 'auto', upColor: 'red', fee: 0.05, funding: 0.01, mmr: 0.5, lev: 3 },
-  DEFAULT_PARAMS: { dir: 'neutral', mode: 'arith', lower: '', upper: '', n: 30, capital: 1000, lev: 3 },
+  DEFAULT_SETTINGS: { symbol: 'ETHUSDT', theme: 'auto', upColor: 'red', fee: 0.02, funding: 0.01, mmr: 0.5, lev: 3 },
+  DEFAULT_PARAMS: { dir: 'neutral', mode: 'arith', lower: '', upper: '', n: 30, capital: 1000, extra: 0, lev: 3 },
 
   settings: {},
   params: {},
@@ -36,6 +37,7 @@ const Store = {
 
   load() {
     this.settings = Object.assign({}, this.DEFAULT_SETTINGS, this.read(this.KEY.settings, {}));
+    if (this.settings.fee === 0.05 && !this.settings.feeFixed) { this.settings.fee = 0.02; this.settings.feeFixed = true; this.saveSettings(); }
     this.params = Object.assign({}, this.DEFAULT_PARAMS, { lev: this.settings.lev }, this.read(this.KEY.params, {}));
     const g = this.read(this.KEY.grids, []);
     this.grids = Array.isArray(g) ? g : [];

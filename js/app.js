@@ -45,7 +45,11 @@ const App = {
       const sym = Store.settings.symbol;
       const [tk, cs] = await Promise.all([Market.ticker(sym), Market.klines(sym, this.tf, 300)]);
       const an = Signal.analyze(cs, tk.funding, Store.settings.fee);
-      this.data = { tk, cs, an, sym, tf: this.tf };
+      let atrD = an.atrPct;
+      if (this.tf !== '1d') {
+        try { const d = await Market.klines(sym, '1d', 300); atrD = Ind.last(Ind.atr(d, 14)) / tk.price * 100; } catch (e) { atrD = NaN; }
+      }
+      this.data = { tk, cs, an, sym, tf: this.tf, atrD };
     } catch (e) {
       this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
     }
@@ -83,6 +87,8 @@ const App = {
     else if (a === 'edit-grid') this.openEditGrid(id);
     else if (a === 'export') this.exportData();
     else if (a === 'import') this.openImport();
+    else if (a === 'add-live') this.openLive();
+    else if (a === 'edit-live') this.openLive(id);
   },
 
   onSeg(el) {
@@ -203,8 +209,11 @@ const App = {
         </div>
         <div class="f-row">
           <div class="f"><label class="lbl" for="p-n">格數</label><input id="p-n" data-p="n" type="number" inputmode="numeric" value="${P.n}"></div>
-          <div class="f"><label class="lbl" for="p-cap">保證金 USDT</label><input id="p-cap" data-p="capital" type="number" inputmode="decimal" value="${P.capital}"></div>
           <div class="f"><label class="lbl" for="p-lev">槓桿 x</label><input id="p-lev" data-p="lev" type="number" inputmode="decimal" value="${P.lev}"></div>
+        </div>
+        <div class="f-row">
+          <div class="f"><label class="lbl" for="p-cap">投資額 USDT</label><input id="p-cap" data-p="capital" type="number" inputmode="decimal" value="${P.capital}"></div>
+          <div class="f"><label class="lbl" for="p-extra">額外保證金 USDT</label><input id="p-extra" data-p="extra" type="number" inputmode="decimal" value="${P.extra || 0}"></div>
         </div>
         <div class="chips">
           <button class="chip" data-act="quick" data-v="5">現價 ±5%</button>
@@ -249,11 +258,11 @@ const App = {
       <div class="kpi-grid">
         ${this.kpi('每格漲幅', r.gapMin === r.gapMax || P.mode === 'geo' ? r.gapAvg.toFixed(2) + '%' : r.gapMin.toFixed(2) + '~' + r.gapMax.toFixed(2) + '%', '', '兩條格線的價差')}
         ${this.kpi('每格淨利(扣手續費)', r.netAvg.toFixed(2) + '%', fmt.cls(r.netAvg), '≈ ' + fmt.usd(r.perCellUsd, 2) + ' USDT / 次')}
-        ${this.kpi('每格名目', fmt.usd(r.cellN, 1) + ' U', '', '總名目 ' + fmt.n(r.notional, 0) + ' U')}
+        ${this.kpi('實際槓桿', r.effLev.toFixed(1) + 'x', r.effLev > 5 ? 'warnc' : '', '全部格子成交時 · 名目 ' + fmt.n(r.notional, 0) + ' U')}
         ${this.kpi('估計強平價', [
           isNaN(r.liqDown) ? '' : liqTxt('下界外', r.liqDown, P.lower),
           isNaN(r.liqUp) ? '' : liqTxt('上界外', r.liqUp, P.upper),
-        ].filter(Boolean).join('<br>') || '—', 'liq', '假設全部格子成交的最壞情況')}
+        ].filter(Boolean).join('<br>') || '—', 'liq', '最壞情況估算,通常比派網顯示高 1~3%')}
       </div>
       <div class="card">
         <div class="legend"><i class="lg lg-price"></i>價格 <i class="lg lg-lvl"></i>格線 <i class="lg lg-liq"></i>強平 <i class="lg lg-now"></i>現價</div>
@@ -299,7 +308,8 @@ const App = {
       ['網格數量', P.n],
       ['網格模式', P.mode === 'geo' ? '等比' : '等差'],
       ['槓桿', P.lev + 'x'],
-      ['投資額', fmt.n(P.capital, 0) + ' USDT'],
+      ['投資額', fmt.n(P.capital, 2) + ' USDT'],
+      ['額外保證金', fmt.n(+P.extra || 0, 2) + ' USDT' + (r.topUp > 0.5 ? `(建議 ≥ ${fmt.n((+P.extra || 0) + r.topUp, 0)})` : '')],
       ['止損價(建議)', sl],
     ];
   },
@@ -329,7 +339,7 @@ const App = {
     root.innerHTML = `
       <div class="card">
         <div class="bt-sum"><span>${err ? `<span class="warn-t">${esc(err)}</span>` :
-          `<b>${dirTxt}</b> · ${P.mode === 'geo' ? '等比' : '等差'} · ${fmt.n(P.lower, 0)}~${fmt.n(P.upper, 0)} · ${P.n} 格 · ${fmt.n(P.capital, 0)}U × ${P.lev}x`}</span>
+          `<b>${dirTxt}</b> · ${P.mode === 'geo' ? '等比' : '等差'} · ${fmt.n(P.lower, 0)}~${fmt.n(P.upper, 0)} · ${P.n} 格 · ${fmt.n(P.capital, 0)}U × ${P.lev}x${+P.extra ? ' + 額外 ' + fmt.n(+P.extra, 0) + 'U' : ''}`}</span>
           <button class="chip" data-act="to-calc">改參數</button></div>
         <label class="lbl">K 線週期(越細越接近真實成交)</label>
         ${this.seg('bt-tf', [['15m', '15 分'], ['1h', '1 小時'], ['4h', '4 小時']], b.tf)}
@@ -373,7 +383,7 @@ const App = {
     return `
       ${r.liquidated ? `<div class="warn w-bad">這組參數在回測期間被強平(約第 ${r.liqIndex + 1} / ${cs.length} 根 K 線),本金歸零。</div>` : ''}
       <div class="kpi-grid">
-        ${this.kpi('總報酬(含未實現)', fmt.pct(r.ret), fmt.cls(r.ret), fmt.usd(r.finalEq - P.capital, 2, true) + ' USDT')}
+        ${this.kpi('總報酬(含未實現)', fmt.pct(r.ret), fmt.cls(r.ret), fmt.usd(r.pnl, 2, true) + ' USDT · 以投資額計')}
         ${this.kpi('最大回撤', r.maxDD.toFixed(1) + '%', r.maxDD > 20 ? 'down' : '', '權益從高點回落')}
         ${this.kpi('完成格數', r.closed + ' 次', '', `${B.days} 天 · 平均每天 ${(r.closed / B.days).toFixed(1)} 次`)}
         ${this.kpi('價格在區間內', r.inRange.toFixed(0) + '%', r.inRange < 70 ? 'warnc' : '', '期間價格 ' + fmt.pct(r.priceChg, 1))}
@@ -381,10 +391,10 @@ const App = {
       <div class="card">
         <div class="section-title in">收益拆解(${Signal.DIR_LABEL[P.dir]})</div>
         <table class="tbl">
-          <tr><td>已實現價差</td><td class="${fmt.cls(r.realized + r.fees + r.funding)}">${fmt.usd(r.realized + r.fees + r.funding, 2, true)}</td></tr>
+          <tr><td>網格利潤(已實現價差)</td><td class="${fmt.cls(r.realized + r.fees + r.funding)}">${fmt.usd(r.realized + r.fees + r.funding, 2, true)}</td></tr>
           <tr><td>手續費</td><td class="down">${fmt.usd(-r.fees, 2)}</td></tr>
           <tr><td>資金費(${Store.settings.funding}%/8h 假設)</td><td class="${fmt.cls(-r.funding)}">${fmt.usd(-r.funding, 2, true)}</td></tr>
-          <tr><td>未實現(${r.held} 格持倉中)</td><td class="${fmt.cls(r.unreal)}">${fmt.usd(r.unreal, 2, true)}</td></tr>
+          <tr><td>趨勢盈虧(${r.held} 格持倉中,含開單底倉 ${r.baseCells} 格)</td><td class="${fmt.cls(r.unreal)}">${fmt.usd(r.unreal, 2, true)}</td></tr>
         </table>
       </div>
       <div class="section-title">三種方向比較(同一段歷史、同一組參數)</div>
@@ -420,7 +430,8 @@ const App = {
     const list = Store.grids;
     root.innerHTML = `
       ${list.length ? list.map(g => this.gridCard(g, px)).join('') :
-        '<div class="card muted-card">還沒有儲存的網格。<br>在「試算」頁調好參數後按「儲存這組」,就會出現在這裡。</div>'}
+        '<div class="card muted-card">還沒有儲存的網格。<br>在「試算」頁調好參數後按「儲存這組」,<br>或把派網上正在跑的機器人登錄進來做健康檢查。</div>'}
+      <button class="btn primary block" data-act="add-live">＋ 登錄派網上正在跑的機器人</button>
       <div class="row-btns">
         <button class="btn" data-act="export">匯出備份</button>
         <button class="btn" data-act="import">匯入</button>
@@ -430,6 +441,7 @@ const App = {
   },
 
   gridCard(g, px) {
+    if (g.live) return this.liveCard(g, px);
     const inRange = px >= g.lower && px <= g.upper;
     const pos = px ? Math.max(0, Math.min(100, (px - g.lower) / (g.upper - g.lower) * 100)) : 0;
     const status = !px ? '' : inRange ? `現價在區間內(${pos.toFixed(0)}%)` :
@@ -450,6 +462,95 @@ const App = {
     </div>`;
   },
 
+  /* ---------- 派網機器人健康檢查 ---------- */
+  LIVE_FIELDS: [
+    ['lev', '槓桿 x'], ['n', '網格數量'], ['lower', '價格區間 下限'], ['upper', '價格區間 上限'],
+    ['capital', '實際投資額 USDT'], ['extra', '額外保證金 USDT'],
+    ['open', '開單時價格'], ['pxLiq', '派網預估強平價(選填)'],
+  ],
+  openLive(id) {
+    const g = id ? Store.grids.find(x => x.id === id) : null;
+    const v = g || { dir: 'long', mode: 'arith', lev: '', lower: '', upper: '', n: '', capital: '', extra: 0, open: '', pxLiq: '' };
+    const inputs = this.LIVE_FIELDS.map(([k, t]) =>
+      `<div class="f"><label class="lbl" for="lv-${k}">${t}</label><input id="lv-${k}" type="number" inputmode="decimal" value="${v[k] == null ? '' : v[k]}"></div>`).join('');
+    const segBtns = (opts, cur) => opts.map(([d, t]) => `<button type="button" data-v="${d}" class="${cur === d ? 'active' : ''}">${t}</button>`).join('');
+    Modal.open(`<h3>${g ? '更新' : '登錄'}派網機器人</h3>
+      <p class="fine in">照派網「機器人 → 訂單詳情 → 報告」上的數字填。</p>
+      <label class="lbl">方向</label>
+      <div class="segmented" id="lv-dir">${segBtns([['long', '做多'], ['neutral', '中性'], ['short', '做空']], v.dir)}</div>
+      <label class="lbl">網格模式</label>
+      <div class="segmented" id="lv-mode">${segBtns([['arith', '等差'], ['geo', '等比']], v.mode || 'arith')}</div>
+      <div class="f-wrap">${inputs}</div>
+      <label class="lbl" for="lv-name">名稱</label><input id="lv-name" value="${esc(g ? g.name : '')}" placeholder="例如:ETH 做多 10x">
+      <div class="row-btns"><button class="btn ghost" data-close="1">取消</button><button class="btn primary" id="lv-ok">儲存</button></div>`, m => {
+      ['#lv-dir', '#lv-mode'].forEach(sel => $(sel, m).addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        $('button', $(sel, m)).forEach(x => x.classList.toggle('active', x === b));
+      }));
+      $('#lv-ok', m).onclick = () => {
+        const rec = {
+          live: true, symbol: g ? g.symbol : Store.settings.symbol,
+          dir: $('#lv-dir .active', m).dataset.v, mode: $('#lv-mode .active', m).dataset.v,
+        };
+        this.LIVE_FIELDS.forEach(([k]) => { const x = $('#lv-' + k, m).value; rec[k] = x === '' ? '' : +x; });
+        if (rec.extra === '') rec.extra = 0;
+        const err = Grid.validate(rec) || (!(rec.open > 0) ? '請填開單時價格' : '');
+        if (err) { Toast.show(err); return; }
+        rec.name = $('#lv-name', m).value.trim() || `${this.sym().name} ${Signal.DIR_LABEL[rec.dir]} ${rec.lev}x`;
+        rec.note = g ? g.note : '';
+        if (g) Store.updateGrid(g.id, rec); else Store.addGrid(rec);
+        Modal.close(); this.renderSaved();
+      };
+    });
+  },
+
+  /* 健康檢查:強平距離、強平價離區間多遠、要補多少保證金
+   * 有填派網顯示的強平價就用派網的(最準),沒填才用自己的估算 */
+  liveCheck(g, px) {
+    const r = Grid.calc(g, { fee: Store.settings.fee, mmr: Store.settings.mmr, price: px, start: g.open });
+    const liq = g.pxLiq > 0 ? g.pxLiq : (g.dir === 'short' ? r.liqUp : r.liqDown);
+    const dist = isNaN(liq) ? NaN : g.dir === 'short' ? (liq - px) / px * 100 : (px - liq) / px * 100;
+    const edgeGap = isNaN(liq) ? NaN : g.dir === 'short' ? (liq - g.upper) / g.upper * 100 : (g.lower - liq) / g.lower * 100;
+    const atrD = this.data && this.data.atrD;
+    const days = atrD && !isNaN(dist) ? dist / atrD : NaN;
+    let level = 'ok', label = '安全';
+    if (dist < 10 || edgeGap < 3) { level = 'bad'; label = '危險'; }
+    else if (dist < 20 || edgeGap < 10) { level = 'warn'; label = '注意'; }
+    const tips = [];
+    if (edgeGap < 10) tips.push(`強平價只在區間${g.dir === 'short' ? '上限上方' : '下限下方'} ${edgeGap.toFixed(1)}%:價格一跑出區間很快就會被強平,網格來不及「等回來」`);
+    if (dist < 20) tips.push(`現價離強平 ${dist.toFixed(1)}%${isNaN(days) ? '' : `,約 ${days.toFixed(1)} 天的 ETH 日均波幅`}`);
+    if (r.topUp > 0.5) tips.push(`要讓強平價離區間 10%(約 ${fmt.n(g.dir === 'short' ? r.safeUp : r.safeDown, 0)}),額外保證金約需再補 ${fmt.n(r.topUp, 0)} USDT;不想補的話,可以用較低槓桿重開`);
+    if (r.effLev > 5) tips.push(`全部格子成交時實際槓桿約 ${r.effLev.toFixed(1)}x(已算額外保證金)`);
+    if (px < g.lower || px > g.upper) tips.push('現價已經在區間外,網格停止套利,只剩趨勢盈虧在跑');
+    if (!tips.length) tips.push('強平距離充足,區間與保證金配置合理');
+    return { r, liq, dist, edgeGap, days, level, label, tips };
+  },
+
+  liveCard(g, px) {
+    const same = g.symbol === Store.settings.symbol;
+    const h = same && px ? this.liveCheck(g, px) : null;
+    const pos = px ? Math.max(0, Math.min(100, (px - g.lower) / (g.upper - g.lower) * 100)) : 0;
+    const inRange = px >= g.lower && px <= g.upper;
+    return `<div class="card g-card live-${h ? h.level : 'ok'}">
+      <div class="g-head"><b>${esc(g.name)}</b><span><span class="badge b-${g.dir}">${Signal.DIR_LABEL[g.dir]} ${g.lev}x</span>${h ? ` <span class="badge h-${h.level}">${h.label}</span>` : ''}</span></div>
+      <div class="g-meta">派網運行中 · ${fmt.n(g.lower, 2)}~${fmt.n(g.upper, 2)} · ${g.n} 格 · 投資 ${fmt.n(g.capital, 2)}U + 額外 ${fmt.n(+g.extra || 0, 2)}U · 開單 ${fmt.n(g.open, 2)}</div>
+      ${h ? `<div class="pos"><div class="pos-bar"><i style="left:${pos}%" class="${inRange ? '' : 'out'}"></i></div></div>
+      <div class="kpi-grid mini">
+        ${this.kpi('強平價' + (g.pxLiq > 0 ? '(派網)' : '(估算)'), fmt.n(h.liq, 0), 'liq')}
+        ${this.kpi('現價距強平', h.dist.toFixed(1) + '%', h.dist < 10 ? 'liq' : h.dist < 20 ? 'warnc' : '', isNaN(h.days) ? '' : '≈ ' + h.days.toFixed(1) + ' 個日均波幅')}
+      </div>
+      <ul class="reasons tips">${h.tips.map(t => `<li class="r-${h.level === 'ok' ? 'up' : 'warn'}">${esc(t)}</li>`).join('')}</ul>` :
+        `<div class="g-meta">切到 ${Market.SYMS[g.symbol] ? Market.SYMS[g.symbol].name : g.symbol} 才能做健康檢查</div>`}
+      <div class="row-btns tight">
+        <button class="btn sm" data-act="edit-live" data-id="${g.id}">更新</button>
+        <button class="btn sm" data-act="load-grid" data-id="${g.id}">試算</button>
+        <button class="btn sm" data-act="bt-grid" data-id="${g.id}">回測</button>
+        <button class="btn sm ghost danger-t" data-act="del-grid" data-id="${g.id}">刪除</button>
+      </div>
+    </div>`;
+  },
+
   openSave() {
     const P = Store.params;
     if (Grid.validate(P)) { Toast.show('參數還不完整'); return; }
@@ -460,7 +561,7 @@ const App = {
       <div class="row-btns"><button class="btn ghost" data-close="1">取消</button><button class="btn primary" id="sv-ok">儲存</button></div>`, m => {
       $('#sv-ok', m).onclick = () => {
         Store.addGrid(Object.assign({ symbol: Store.settings.symbol, name: $('#sv-name', m).value.trim() || def, note: $('#sv-note', m).value.trim() },
-          ['dir', 'mode', 'lower', 'upper', 'n', 'capital', 'lev'].reduce((o, k) => (o[k] = P[k], o), {})));
+          ['dir', 'mode', 'lower', 'upper', 'n', 'capital', 'extra', 'lev'].reduce((o, k) => (o[k] = P[k], o), {})));
         Modal.close(); Toast.show('已儲存');
       };
     });
@@ -470,7 +571,7 @@ const App = {
     const g = Store.grids.find(x => x.id === id);
     if (!g) return;
     if (g.symbol !== Store.settings.symbol) { Store.settings.symbol = g.symbol; Store.saveSettings(); Market._cache = {}; this.data = null; this.load(); }
-    ['dir', 'mode', 'lower', 'upper', 'n', 'capital', 'lev'].forEach(k => { Store.params[k] = g[k]; });
+    ['dir', 'mode', 'lower', 'upper', 'n', 'capital', 'extra', 'lev'].forEach(k => { Store.params[k] = g[k] == null ? (k === 'extra' ? 0 : '') : g[k]; });
     Store.saveParams();
     this.bt.res = null;
     this.go(goto);

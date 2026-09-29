@@ -27,13 +27,42 @@ const Grid = {
     if (p.upper <= p.lower) return '上界要大於下界';
     if (!(p.n >= 2) || p.n > 300) return '格數要在 2 ~ 300';
     if (!(p.capital > 0)) return '請填投入保證金';
-    if (!(p.lev >= 1) || p.lev > 50) return '槓桿要在 1 ~ 50';
+    if (!(p.lev >= 1) || p.lev > 125) return '槓桿要在 1 ~ 125';
+    if (p.extra !== '' && p.extra != null && !(p.extra >= 0)) return '額外保證金不能是負數';
     return '';
   },
 
-  /* 多單全部成交後的強平價:權益 = 保證金 + 損益 = mmr × 名義 → P = avg(1 − 1/L)/(1 − mmr) */
-  liqLong(avg, L, mmr) { return avg * (1 - 1 / L) / (1 - mmr); },
-  liqShort(avg, L, mmr) { return avg * (1 + 1 / L) / (1 + mmr); },
+  /* 保證金 = 投資額 + 額外保證金(派網「額外保證金」只墊高保證金,不放大倉位) */
+  margin(p) { return (+p.capital || 0) + (+p.extra || 0); },
+
+  /* 最壞情況的持倉簿(派網 / 幣安的合約網格開法):
+   *   做多:開單當下先以開單價買進「開單價以上」所有格子的底倉,開單價以下的格子跌到才買
+   *         → 跌破下界時 = 全部格子都持有多單
+   *   做空:反過來,開單價以下的格子先以開單價放空
+   *   中性:不建底倉;現價以下的格子做多、以上的做空
+   * 回傳 {long:{Q, QE}, short:{Q, QE}}:Q = 總數量,QE = Σ數量×進場價 */
+  book(p, start) {
+    const lv = this.levels(p.lower, p.upper, p.n, p.mode), cellN = p.capital * p.lev / p.n;
+    const inR = start >= p.lower && start <= p.upper;
+    const L = { Q: 0, QE: 0, n: 0 }, S = { Q: 0, QE: 0, n: 0 };
+    const add = (b, e) => { const q = cellN / e; b.Q += q; b.QE += q * e; b.n++; };
+    for (let i = 0; i < p.n; i++) {
+      if (p.dir === 'long') add(L, inR && lv[i + 1] > start ? start : lv[i]);
+      else if (p.dir === 'short') add(S, inR && lv[i] < start ? start : lv[i + 1]);
+      else if (lv[i + 1] <= start) add(L, lv[i]);
+      else add(S, lv[i + 1]);
+    }
+    return { long: L, short: S };
+  },
+  /* 權益 = M + Σq(P − e) = mmr·Q·P(多)/ M + Σq(e − P) = mmr·Q·P(空) */
+  liqOf(side, b, M, m) {
+    if (!b.Q) return NaN;
+    return side === 'long' ? (b.QE - M) / (b.Q * (1 - m)) : (M + b.QE) / (b.Q * (1 + m));
+  },
+  /* 反過來:要讓強平價落在 target,保證金要多少 */
+  marginFor(side, b, target, m) {
+    return side === 'long' ? b.QE - b.Q * target * (1 - m) : b.Q * target * (1 + m) - b.QE;
+  },
 
   /* 用「最多能承受多遠」反推安全槓桿:強平價離區間邊界至少 buffer(預設 10%) */
   safeLeverage(dir, lower, upper, buffer, mmr) {
@@ -61,26 +90,16 @@ const Grid = {
     const netAvg = gapAvg - feeRt, netMin = gapMin - feeRt;
     const perCellUsd = cellN * netAvg / 100;
 
-    const m = mmr / 100;
-    /* 極端情境的持倉:做多 = 所有格子都買進;做空 = 所有格子都賣出;
-       中性 = 現價以下的格子做多、以上的格子做空(各自算單邊) */
-    const longCells = [], shortCells = [];
-    for (let i = 0; i < p.n; i++) {
-      const isLong = p.dir === 'long' || (p.dir === 'neutral' && lv[i + 1] <= price);
-      const isShort = p.dir === 'short' || (p.dir === 'neutral' && !isLong);
-      if (isLong) longCells.push(lv[i]);          // 在下緣買進
-      if (isShort) shortCells.push(lv[i + 1]);    // 在上緣賣出
-    }
-    const avgOf = cells => cells.length / cells.reduce((s, x) => s + 1 / x, 0);   // 等名目 → 調和平均
-    let liqDown = NaN, liqUp = NaN;
-    if (longCells.length) {
-      const avg = avgOf(longCells), L = cellN * longCells.length / p.capital;
-      liqDown = this.liqLong(avg, L, m);
-    }
-    if (shortCells.length) {
-      const avg = avgOf(shortCells), L = cellN * shortCells.length / p.capital;
-      liqUp = this.liqShort(avg, L, m);
-    }
+    const m = mmr / 100, M = this.margin(p);
+    const start = opt.start || price || (p.lower + p.upper) / 2;     // 開單價(新單 = 現價)
+    const bk = this.book(p, start);
+    const liqDown = this.liqOf('long', bk.long, M, m), liqUp = this.liqOf('short', bk.short, M, m);
+    /* 「安全」= 強平價離區間邊界至少 10%;不夠的話要補多少額外保證金 */
+    const safeDown = p.lower * 0.9, safeUp = p.upper * 1.1;
+    const needDown = bk.long.Q ? Math.max(0, this.marginFor('long', bk.long, safeDown, m) - M) : 0;
+    const needUp = bk.short.Q ? Math.max(0, this.marginFor('short', bk.short, safeUp, m) - M) : 0;
+    const topUp = Math.max(needDown, needUp);
+    const effLev = (bk.long.Q + bk.short.Q) ? Math.max(bk.long.Q, bk.short.Q) * start / M : 0;   // 全部成交時的實際槓桿
 
     const warns = [];
     if (netAvg <= 0) warns.push({ level: 'bad', text: `每格漲幅 ${gapAvg.toFixed(2)}% 還不夠付來回手續費 ${feeRt.toFixed(2)}%,這樣跑是賠錢的,請減少格數` });
@@ -96,10 +115,19 @@ const Grid = {
       if (liqUp <= p.upper) warns.push({ level: 'bad', text: `估計強平價 ${liqUp.toFixed(0)} 在區間內(≤ 上界),價格還沒漲出區間就可能被強平,降低槓桿` });
       else if (gap < 8) warns.push({ level: 'warn', text: `強平價只在上界上方 ${gap.toFixed(1)}%,突破上界後很快就出事,建議降槓桿並設止損` });
     }
-    if (p.lev > 5) warns.push({ level: 'warn', text: `槓桿 ${p.lev}x 偏高,網格常常會累積單邊倉位,建議 2~3x` });
+    if (price && !isNaN(liqDown) && price > liqDown) {
+      const d = (price - liqDown) / price * 100;
+      if (d < 10) warns.push({ level: 'bad', text: `現價離強平只剩 ${d.toFixed(1)}%,ETH 一兩天的正常波動就可能碰到` });
+    }
+    if (price && !isNaN(liqUp) && liqUp > price) {
+      const d = (liqUp - price) / price * 100;
+      if (d < 10) warns.push({ level: 'bad', text: `現價離強平只剩 ${d.toFixed(1)}%,ETH 一兩天的正常波動就可能碰到` });
+    }
+    if (topUp > 0.5) warns.push({ level: 'warn', text: `要讓強平價離區間邊界 10%,額外保證金需再補約 ${topUp.toFixed(0)} USDT(或降低槓桿)` });
+    if (effLev > 5) warns.push({ level: 'warn', text: `全部格子成交時實際槓桿約 ${effLev.toFixed(1)}x(已算額外保證金),偏高;網格常會累積單邊倉位,建議 3x 以下` });
     if (price && (price < p.lower || price > p.upper)) warns.push({ level: 'warn', text: '現價在區間之外,網格啟動後不會立刻成交' });
 
-    return { levels: lv, notional, cellN, gapMin, gapMax, gapAvg, feeRt, netAvg, netMin, perCellUsd, liqDown, liqUp, warns };
+    return { levels: lv, notional, cellN, gapMin, gapMax, gapAvg, feeRt, netAvg, netMin, perCellUsd, liqDown, liqUp, warns, M, start, topUp, effLev, safeDown, safeUp };
   },
 
   /* 回測:用歷史 K 線逐根走一遍
@@ -126,7 +154,8 @@ const Grid = {
     }
 
     let cash = 0, fees = 0, fundingPaid = 0, closed = 0, liquidated = false;
-    let netQty = 0, maxDD = 0, peak = p.capital, inRange = 0;
+    const M = this.margin(p);
+    let netQty = 0, maxDD = 0, peak = M, inRange = 0;
     const eq = [], liqAt = { i: -1 };
 
     const fill = (cell, price, open) => {
@@ -164,8 +193,17 @@ const Grid = {
         unreal += (c.type === 'L' ? px - c.entry : c.entry - px) * c.qty;
         exposure += c.qty * px;
       }
-      return { equity: p.capital + cash + unreal - fees - fundingPaid, unreal, exposure };
+      return { equity: M + cash + unreal - fees - fundingPaid, unreal, exposure };
     };
+
+    /* 開單當下建底倉(做多:開單價以上的格子;做空:開單價以下的格子),跟派網一樣 */
+    if (p0 >= p.lower && p0 <= p.upper) {
+      for (let k = 0; k < n; k++) {
+        const c = cells[k];
+        if ((p.dir === 'long' && lv[k + 1] > p0) || (p.dir === 'short' && lv[k] < p0)) fill(c, p0, true);
+      }
+    }
+    const baseCells = cells.filter(c => c.held).length;
 
     for (let i = 0; i < cs.length; i++) {
       const k = cs[i];
@@ -194,7 +232,7 @@ const Grid = {
     const realized = cash - fees - fundingPaid;
     return {
       liquidated, liqIndex: liqAt.i, eq, closed,
-      finalEq, ret: (finalEq / p.capital - 1) * 100,
+      finalEq, pnl: finalEq - M, ret: (finalEq - M) / p.capital * 100, baseCells,
       realized, unreal: liquidated ? 0 : q.unreal, fees, funding: fundingPaid,
       maxDD: maxDD * 100, inRange: cs.length ? inRange / cs.length * 100 : 0,
       priceChg: (cs[cs.length - 1].c / cs[0].o - 1) * 100,
