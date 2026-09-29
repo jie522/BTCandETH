@@ -4,19 +4,19 @@
  * 交易所行情 API 是跨網域,一律直接走網路,不進快取。
  * 改版時把 CACHE 的日期換掉,舊快取會在啟用時自動清掉。
  */
-const CACHE = 'ethgrid-20260929b';
+const CACHE = 'ethgrid-20260929c';
 
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  './css/style.css?v=20260929b',
-  './js/store.js?v=20260929b',
-  './js/ui.js?v=20260929b',
-  './js/market.js?v=20260929b',
-  './js/grid.js?v=20260929b',
-  './js/signal.js?v=20260929b',
-  './js/app.js?v=20260929b',
+  './css/style.css?v=20260929c',
+  './js/store.js?v=20260929c',
+  './js/ui.js?v=20260929c',
+  './js/market.js?v=20260929c',
+  './js/grid.js?v=20260929c',
+  './js/signal.js?v=20260929c',
+  './js/app.js?v=20260929c',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',

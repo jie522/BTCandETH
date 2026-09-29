@@ -9,8 +9,8 @@ const Market = {
     ETHUSDT: { name: 'ETH', okx: 'ETH-USDT-SWAP' },
     BTCUSDT: { name: 'BTC', okx: 'BTC-USDT-SWAP' },
   },
-  TF_MS: { '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5 },
-  OKX_BAR: { '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D' },
+  TF_MS: { '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 },
+  OKX_BAR: { '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W' },
   source: '',            // 最後一次成功用的是哪個交易所,顯示在畫面上
   _cache: {},
 

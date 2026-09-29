@@ -18,7 +18,7 @@ const fmt = {
     return (sign && x > 0 ? '+' : '') + fmt.n(x, d);
   },
   cls(x) { return x > 0 ? 'up' : x < 0 ? 'down' : ''; },
-  date(t) { const d = new Date(t); return (d.getMonth() + 1) + '/' + d.getDate(); },
+  date(t, yr) { const d = new Date(t); return (yr ? d.getFullYear() + '/' : '') + (d.getMonth() + 1) + '/' + d.getDate(); },
 };
 
 const ICONS = {

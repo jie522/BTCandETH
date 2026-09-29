@@ -129,7 +129,7 @@ const App = {
       ['MA200', isNaN(an.ma200) ? '—' : fmt.price(an.ma200), tk.price > an.ma200 ? 'up' : 'down'],
       ['RSI(14)', an.rsi.toFixed(0), an.rsi >= 70 ? 'warnc' : an.rsi <= 30 ? 'warnc' : ''],
       ['ADX 趨勢強度', an.adx.toFixed(0), an.adx >= 25 ? 'accent' : ''],
-      ['ATR 日均波幅', an.atrPct.toFixed(2) + '%', ''],
+      ['ATR 單根波幅', an.atrPct.toFixed(2) + '%', ''],
       ['布林帶寬分位', isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0), ''],
       ['資金費率/8h', an.funding.toFixed(4) + '%', an.funding >= 0.03 || an.funding <= -0.01 ? 'warnc' : ''],
     ];
@@ -143,7 +143,7 @@ const App = {
       </div>
       ${this.err ? this.errBox() : ''}
       <div class="section-title">判讀週期</div>
-      ${this.seg('tf', [['4h', '4 小時'], ['1d', '日線']], this.tf)}
+      ${this.seg('tf', [['4h', '4 小時'], ['1d', '日線'], ['1w', '週線']], this.tf)}
       <div class="card verdict v-${an.dir}">
         <div class="v-head"><span class="v-badge">${Signal.DIR_LABEL[an.dir]}</span><span class="v-conf">把握度 ${an.strength}</span></div>
         <div class="v-title">${name} 目前${lean}</div>
@@ -174,7 +174,7 @@ const App = {
           ],
           band: { lo: sug.lower, hi: sug.upper },
           lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }],
-          x: [fmt.date(view[0].t), fmt.date(view[view.length - 1].t)],
+          x: [fmt.date(view[0].t, this.tf === '1w'), fmt.date(view[view.length - 1].t, this.tf === '1w')],
         })}
       </div>
       <p class="fine">訊號只是機率上的參考,不是預測。網格賺的是震盪,方向選錯或趨勢強時會累積虧損倉位,務必控制槓桿與止損。</p>`;
