@@ -85,4 +85,39 @@ const Signal = {
     const lev = Math.max(1, Math.min(3, Grid.safeLeverage(dir, lower, upper, 0.1, Store.settings.mmr / 100)));
     return { lower, upper, n, lev: Math.floor(lev), mode: 'arith', dir };
   },
+
+  /* 低 / 中 / 高風險三組建議
+   *
+   * 區間寬度用「日線 ATR」當尺(不同判讀週期都用同一把尺,週線才不會給出超寬區間),
+   * 做多時區間往下多留一點(回檔買得到)、做空時往上多留一點。
+   *   低風險:區間寬、每格賺得厚、槓桿 ≤ 3x,強平價離區間邊界 ≥ 20%;方向不夠明確就用中性
+   *   中風險:區間中等、槓桿 ≤ 5x,強平價離區間邊界 ≥ 10%
+   *   高風險:區間窄、格子密(套利次數多)、槓桿 ≤ 10x,強平價離區間邊界 ≥ 4%
+   * 槓桿不是用公式估,是用 Grid.calc(派網開法 + 開單底倉)從上限往下試,找第一個符合強平距離的。 */
+  TIERS: [
+    { key: 'low', name: '低風險', hw: [12, 4], buf: 0.20, levCap: 3, net: 0.5 },
+    { key: 'mid', name: '中風險', hw: [8, 2.5], buf: 0.10, levCap: 5, net: 0.3 },
+    { key: 'high', name: '高風險', hw: [4, 1.2], buf: 0.04, levCap: 10, net: 0.15 },
+  ],
+  profiles(an, price, atrD, fee, mmr) {
+    const d = isNaN(atrD) ? 3.5 : atrD;
+    return this.TIERS.map(t => {
+      const dir = t.key === 'low' && an.strength !== '高' ? 'neutral' : an.dir;
+      const hw = Math.max(t.hw[0], t.hw[1] * d) / 100;
+      const dn = dir === 'long' ? 1.25 : dir === 'short' ? 0.75 : 1;
+      const up = dir === 'long' ? 0.75 : dir === 'short' ? 1.25 : 1;
+      const lower = Grid.nice(price * (1 - hw * dn), price), upper = Grid.nice(price * (1 + hw * up), price);
+      const width = (upper / lower - 1) * 100;
+      const n = Math.max(5, Math.min(150, Math.round(width / (t.net + 2 * fee))));
+      const base = { dir, mode: 'arith', lower, upper, n, capital: 1000, extra: 0 };
+      let lev = 1, calc = null;
+      for (let L = t.levCap; L >= 1; L--) {
+        const r = Grid.calc(Object.assign({}, base, { lev: L }), { fee, mmr, price });
+        const okDn = isNaN(r.liqDown) || r.liqDown <= lower * (1 - t.buf);
+        const okUp = isNaN(r.liqUp) || r.liqUp >= upper * (1 + t.buf);
+        if ((okDn && okUp) || L === 1) { lev = L; calc = r; break; }
+      }
+      return Object.assign(base, { lev, tier: t.key, tierName: t.name, width, calc });
+    });
+  },
 };

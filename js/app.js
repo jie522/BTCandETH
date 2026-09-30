@@ -7,6 +7,7 @@ const App = {
   err: '',
   bt: { tf: '1h', days: 30, res: null, busy: false },
   TFS: [['4h', '4 小時'], ['1d', '日線'], ['1w', '週線']],
+  tier: 'mid',              // 建議參數目前看的風險等級
 
   sym() { return Market.SYMS[Store.settings.symbol]; },
   opt() { const s = Store.settings; return { fee: s.fee, mmr: s.mmr, price: this.data ? this.data.tk.price : 0 }; },
@@ -70,6 +71,7 @@ const App = {
     else if (a === 'import') this.openImport();
     else if (a === 'add-live') this.openLive();
     else if (a === 'tf-pick') this.pickTf(b.dataset.v);
+    else if (a === 'tier') { this.tier = b.dataset.v; const el = $('#sug-card'); if (el) el.outerHTML = this.sugCardHtml(); }
     else if (a === 'guide-done') { Store.settings.guideDone = true; Store.saveSettings(); this.renderMarket(); }
     else if (a === 'go-saved') this.go('saved');
     else if (a === 'fill-safe') this.fillSafe();
@@ -120,13 +122,75 @@ const App = {
       const [tk, ...ks] = await Promise.all([Market.ticker(sym), ...this.TFS.map(([tf]) => Market.klines(sym, tf, 300))]);
       const tfs = {};
       this.TFS.forEach(([tf], i) => { tfs[tf] = { cs: ks[i], an: Signal.analyze(ks[i], tk.funding, Store.settings.fee) }; });
-      this.data = { tk, sym, tfs, atrD: tfs['1d'].an.atrPct, at: Date.now(), klAt: Date.now() };
+      const atrD = tfs['1d'].an.atrPct;
+      Object.values(tfs).forEach(t => {
+        t.an.profiles = Signal.profiles(t.an, tk.price, atrD, Store.settings.fee, Store.settings.mmr);
+        t.an.sug = t.an.profiles[1];
+      });
+      this.data = { tk, sym, tfs, atrD, at: Date.now(), klAt: Date.now(), h1: null };
+      this.loadH1(sym);
       this.pickTf(this.tf, true);
     } catch (e) {
       this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
     }
     this.loading = false;
     this.go(this.tab, true);
+  },
+
+  /* 三檔建議要用過去 30 天 1 小時 K 線回測,背景抓,抓到後只重畫建議卡 */
+  async loadH1(sym) {
+    try {
+      const h1 = await Market.klines(sym, '1h', 720);
+      if (!this.data || this.data.sym !== sym) return;
+      this.data.h1 = h1;
+      const el = $('#sug-card');
+      if (el && this.tab === 'market') el.outerHTML = this.sugCardHtml();
+    } catch (e) { /* 回測數字就不顯示 */ }
+  },
+  profBt(an) {
+    if (!this.data.h1) return null;
+    if (!an._bt) {
+      const o = { fee: Store.settings.fee, mmr: Store.settings.mmr, funding: Store.settings.funding, candleMs: 36e5 };
+      an._bt = an.profiles.map(p => Grid.backtest(p, this.data.h1, o));
+    }
+    return an._bt;
+  },
+
+  TIER_NOTE: {
+    low: '區間寬、槓桿低,強平價離區間 20% 以上;單邊走勢也撐得住,賺得慢但穩。方向不夠明確時會自動用中性。',
+    mid: '兼顧套利次數與安全距離,強平價離區間 10% 以上;適合大多數情況的起手式。',
+    high: '區間窄、格子密,套利次數最多;但價格很容易跑出區間,強平也近。只適合小資金、要常盯盤、一定要設止損。',
+  },
+  sugCardHtml() {
+    const { tk, an } = this.data, tn = this.tfName(this.tf);
+    const ps = an.profiles, bts = this.profBt(an);
+    const i = Math.max(0, ps.findIndex(p => p.tier === this.tier));
+    const p = ps[i], r = p.calc, bt = bts && bts[i];
+    const k = this.risk(p.dir, r.liqDown, r.liqUp, tk.price, p.lower, p.upper);
+    const tabs = ps.map((q, j) => `<button type="button" class="tier-btn t-${q.tier}${j === i ? ' cur' : ''}" data-act="tier" data-v="${q.tier}">
+      <b>${q.tierName}</b><span>${q.lev}x · ${Signal.DIR_LABEL[q.dir].replace('網格', '')}</span>
+      <em class="${bts ? fmt.cls(bts[j].ret) : ''}">${bts ? (bts[j].liquidated ? '回測強平' : '30 天 ' + fmt.pct(bts[j].ret, 1)) : '回測中…'}</em></button>`).join('');
+    return `<div class="card sug-card" id="sug-card">
+      <div class="card-h"><span class="section-title in">建議網格參數 · 依${tn}方向</span><span class="hint">選風險等級</span></div>
+      <div class="tier-tabs">${tabs}</div>
+      <div class="tier-body t-${p.tier}">
+        <div class="sug-grid">
+          <div><span>方向</span><b>${Signal.DIR_LABEL[p.dir]}</b></div>
+          <div><span>區間(寬 ${p.width.toFixed(1)}%)</span><b>${fmt.n(p.lower, 0)} ~ ${fmt.n(p.upper, 0)}</b></div>
+          <div><span>格數(每格淨利)</span><b>${p.n} 格 · ${r.netAvg.toFixed(2)}%</b></div>
+          <div><span>槓桿(全成交實際)</span><b>${p.lev}x · ${r.effLev.toFixed(1)}x</b></div>
+        </div>
+        ${Viz.rangeBar({ lower: p.lower, upper: p.upper, price: tk.price, liqDown: p.dir !== 'short' ? r.liqDown : NaN, liqUp: p.dir !== 'long' ? r.liqUp : NaN })}
+        <div class="kpi-grid mini">
+          ${this.kpi('強平離區間', isNaN(k.edge) ? '—' : k.edge.toFixed(1) + '%', 'liq', '現價距強平 ' + (isNaN(k.dist) ? '—' : k.dist.toFixed(1) + '%'))}
+          ${bt ? this.kpi('過去 30 天回測', bt.liquidated ? '強平' : fmt.pct(bt.ret, 1), bt.liquidated ? 'liq' : fmt.cls(bt.ret), '最大回撤 ' + bt.maxDD.toFixed(0) + '% · 每天套利 ' + (bt.closed / 30).toFixed(0) + ' 次')
+            : this.kpi('過去 30 天回測', '計算中…', '', '1 小時 K 線')}
+        </div>
+        <p class="tier-note">${this.TIER_NOTE[p.tier]}</p>
+      </div>
+      <button class="btn primary block big" data-act="apply">帶入試算(${p.tierName})→</button>
+      <p class="fine in">回測以 1,000 USDT、無額外保證金計,報酬是百分比,換成你的金額比例相同。過去表現不代表未來。</p>
+    </div>`;
   },
 
   /* 換判讀週期:資料已經在手上,直接換指標就好 */
@@ -282,7 +346,6 @@ const App = {
     const { tk, cs, an } = this.data, name = this.sym().name, tn = this.tfName(this.tf);
     const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
     const ma = k => an.ma[k].slice(off);
-    const sr = Grid.calc(Object.assign({ capital: 1000, extra: 0 }, sug), { fee: Store.settings.fee, mmr: Store.settings.mmr, price: tk.price });
     root.innerHTML = `
       ${this.guideHtml()}
       ${this.priceCardHtml()}
@@ -298,17 +361,7 @@ const App = {
         <details class="reasons-d" open><summary>判讀依據(${an.reasons.length} 項)</summary>
           <ul class="reasons">${an.reasons.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul></details>
       </div>
-      <div class="card sug-card">
-        <div class="section-title in">建議起手參數 · ${tn}</div>
-        <div class="sug-grid">
-          <div><span>方向</span><b>${Signal.DIR_LABEL[sug.dir]}</b></div>
-          <div><span>區間</span><b>${fmt.n(sug.lower, 0)} ~ ${fmt.n(sug.upper, 0)}</b></div>
-          <div><span>格數</span><b>${sug.n} 格</b></div>
-          <div><span>槓桿</span><b>${sug.lev}x</b></div>
-        </div>
-        ${Viz.rangeBar({ lower: sug.lower, upper: sug.upper, price: tk.price, liqDown: sug.dir !== 'short' ? sr.liqDown : NaN, liqUp: sug.dir !== 'long' ? sr.liqUp : NaN })}
-        <button class="btn primary block big" data-act="apply">一鍵帶入試算 →</button>
-      </div>
+      ${this.sugCardHtml()}
       <div class="card">
         <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
         <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間</div>
@@ -348,7 +401,7 @@ const App = {
         </div>
         ${pr ? `<div class="sl-pair"><span>下限</span>${sl('lower', pr.min, pr.max, pr.step)}</div><div class="sl-pair"><span>上限</span>${sl('upper', pr.min, pr.max, pr.step)}</div>` : ''}
         <div class="chips">
-          ${this.data ? '<button class="chip accent-chip" data-act="apply">用建議區間</button>' : ''}
+          ${this.data ? `<button class="chip accent-chip" data-act="apply">用建議參數(${(Signal.TIERS.find(t => t.key === this.tier) || {}).name})</button>` : ''}
           <button class="chip" data-act="quick" data-v="5">現價 ±5%</button>
           <button class="chip" data-act="quick" data-v="10">±10%</button>
           <button class="chip" data-act="quick" data-v="15">±15%</button>
@@ -624,10 +677,11 @@ const App = {
   },
 
   applySuggestion() {
-    const s = this.data.an.sug;
+    const s = this.data.an.profiles.find(p => p.tier === this.tier) || this.data.an.sug;
     Object.assign(Store.params, { dir: s.dir, mode: s.mode, lower: s.lower, upper: s.upper, n: s.n, lev: s.lev });
     Store.saveParams();
-    Toast.show('已套用建議參數');
+    this.bt.res = null;
+    Toast.show('已帶入' + (s.tierName || '建議') + '參數');
     this.go('calc');
   },
 

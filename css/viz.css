@@ -210,3 +210,19 @@ input.slider:focus { outline: none; }
 .bar-f.bf-neg { background: var(--down); }
 .bar-v { text-align: right; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
 .bar-v small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); }
+
+/* 建議參數:低 / 中 / 高風險 */
+:root { --t-low: var(--accent); --t-mid: var(--warn); --t-high: var(--bad); }
+.tier-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 6px 0 12px; }
+.tier-btn { border: 2px solid var(--line); background: var(--card2); color: var(--text); border-radius: 14px; padding: 8px 4px; font: inherit; display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: pointer; transition: background-color .15s; }
+.tier-btn b { font-size: 15px; }
+.tier-btn span { font-size: 11px; color: var(--muted); }
+.tier-btn em { font-style: normal; font-size: 12px; font-weight: 700; }
+.tier-btn.t-low b { color: var(--t-low); } .tier-btn.t-mid b { color: var(--t-mid); } .tier-btn.t-high b { color: var(--t-high); }
+.tier-btn.t-low.cur { border-color: var(--t-low); background: color-mix(in srgb, var(--t-low) 14%, var(--card2)); }
+.tier-btn.t-mid.cur { border-color: var(--t-mid); background: color-mix(in srgb, var(--t-mid) 14%, var(--card2)); }
+.tier-btn.t-high.cur { border-color: var(--t-high); background: color-mix(in srgb, var(--t-high) 14%, var(--card2)); }
+.tier-body { border-left: 4px solid var(--t-mid); padding-left: 10px; }
+.tier-body.t-low { border-left-color: var(--t-low); } .tier-body.t-high { border-left-color: var(--t-high); }
+.tier-body .kpi-grid.mini { margin-top: 0; }
+.tier-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; line-height: 1.6; }
