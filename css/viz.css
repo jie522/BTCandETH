@@ -226,3 +226,21 @@ input.slider:focus { outline: none; }
 .tier-body.t-low { border-left-color: var(--t-low); } .tier-body.t-high { border-left-color: var(--t-high); }
 .tier-body .kpi-grid.mini { margin-top: 0; }
 .tier-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; line-height: 1.6; }
+
+/* 指標儀表:投票與偏多 / 偏空小標 */
+.ind-card .segmented { margin: 4px 0 12px; }
+.vote { background: var(--card2); border-radius: 12px; padding: 10px 12px; margin-bottom: 6px; border-left: 4px solid var(--accent); }
+.vote.v-long { border-left-color: var(--up); } .vote.v-short { border-left-color: var(--down); }
+.vote-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.vote-bar i { display: block; height: 100%; }
+.vb-up { background: var(--up); } .vb-dn { background: var(--down); } .vb-flat { background: var(--grid); opacity: .6; }
+.vote-cnt { display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; color: var(--muted); }
+.vote-cnt .up { color: var(--up); font-weight: 700; } .vote-cnt .down { color: var(--down); font-weight: 700; }
+.vote-v { font-size: 14px; margin-top: 4px; }
+.ind-group { display: flex; justify-content: space-between; align-items: baseline; margin: 12px 0 0; padding-bottom: 4px; border-bottom: 2px solid var(--line); font-weight: 800; font-size: 14px; }
+.ind-group small { font-weight: 400; font-size: 11px; color: var(--muted); }
+.ind-group + .meter-row { border-top: 0; }
+.lean-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-top: 3px; background: var(--card2); color: var(--muted); }
+.lean-chip.ln-up { background: color-mix(in srgb, var(--up) 16%, var(--card2)); color: var(--up); }
+.lean-chip.ln-down { background: color-mix(in srgb, var(--down) 16%, var(--card2)); color: var(--down); }
+.card-h + .segmented { margin: 2px 0 8px; }

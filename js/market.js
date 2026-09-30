@@ -9,8 +9,8 @@ const Market = {
     ETHUSDT: { name: 'ETH', okx: 'ETH-USDT-SWAP' },
     BTCUSDT: { name: 'BTC', okx: 'BTC-USDT-SWAP' },
   },
-  TF_MS: { '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 },
-  OKX_BAR: { '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W' },
+  TF_MS: { '15m': 9e5, '1h': 36e5, '4h': 144e5, '8h': 288e5, '1d': 864e5, '1w': 6048e5 },
+  OKX_BAR: { '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W' },   // OKX 沒有 8H,用兩根 4H 合成
   source: '',            // 最後一次成功用的是哪個交易所,顯示在畫面上
   _cache: {},
 
@@ -93,6 +93,16 @@ const Market = {
   },
 
   async okxKlines(sym, tf, limit) {
+    if (tf === '8h') {
+      // 對齊 UTC 00 / 08 / 16 點(跟 Binance 的 8h K 線同一個切法)
+      const h4 = await this.okxKlines(sym, '4h', limit * 2 + 2), out = [];
+      h4.forEach(k => {
+        const t0 = k.t - (k.t % 288e5), last = out[out.length - 1];
+        if (last && last.t === t0) { last.h = Math.max(last.h, k.h); last.l = Math.min(last.l, k.l); last.c = k.c; last.v += k.v; }
+        else out.push({ t: t0, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v });
+      });
+      return out.slice(-limit);
+    }
     const id = this.SYMS[sym].okx, bar = this.OKX_BAR[tf];
     let out = [], after = '';
     while (out.length < limit) {
@@ -111,6 +121,27 @@ const Market = {
   },
 };
 
+/* ---------- 籌碼面(只有 Binance 有公開,最多回溯 30 天) ----------
+ * period:'4h' | '1d';回傳由舊到新的陣列,抓不到就是 null */
+Market.sentiment = async function (sym, period) {
+  return this.cached('st' + sym + period, 300000, async () => {
+    const q = `?symbol=${sym}&period=${period}&limit=30`, B = 'https://fapi.binance.com/futures/data/';
+    const [ls, top, taker, oi] = await Promise.all([
+      this.getJSON(B + 'globalLongShortAccountRatio' + q),
+      this.getJSON(B + 'topLongShortPositionRatio' + q),
+      this.getJSON(B + 'takerlongshortRatio' + q),
+      this.getJSON(B + 'openInterestHist' + q),
+    ]);
+    return {
+      period,
+      ls: ls.map(x => +x.longShortRatio),
+      top: top.map(x => +x.longShortRatio),
+      taker: taker.map(x => +x.buySellRatio),
+      oi: oi.map(x => ({ q: +x.sumOpenInterest, v: +x.sumOpenInterestValue, t: +x.timestamp })),
+    };
+  });
+};
+
 /* ---------- 技術指標(輸入 / 輸出都是普通陣列,不足的地方補 NaN) ---------- */
 const Ind = {
   last(a) { return a[a.length - 1]; },
@@ -124,6 +155,19 @@ const Ind = {
       if (i >= p - 1) out[i] = s / p;
     }
     return out;
+  },
+
+  ema(a, p) {
+    const k = 2 / (p + 1), out = [];
+    a.forEach((v, i) => out.push(i === 0 ? v : v * k + out[i - 1] * (1 - k)));
+    return out;
+  },
+
+  /* MACD(12, 26, 9):DIF = 快線 − 慢線,DEA = DIF 的 9 期 EMA,柱 = DIF − DEA */
+  macd(c) {
+    const f = this.ema(c, 12), s = this.ema(c, 26);
+    const dif = c.map((_, i) => f[i] - s[i]), dea = this.ema(dif, 9);
+    return { dif, dea, hist: dif.map((v, i) => v - dea[i]) };
   },
 
   /* RSI(Wilder 平滑) */

@@ -150,6 +150,7 @@ const Viz = {
     const ticks = (o.ticks || []).map(t => `<em style="left:${p(t)}%">${t}</em>`).join('');
     return `<div class="meter-row">
       <div class="mr-top"><span class="mr-l">${o.label}</span><b class="mr-v ${o.cls || ''}">${o.text}</b></div>
+      ${o.lean ? `<div class="lean-chip ln-${o.lean}">${o.leanText}</div>` : ''}
       <div class="mbar">${z}<i class="mk" style="left:${isNaN(o.v) ? -99 : p(o.v)}%"></i></div>
       <div class="mticks">${ticks}</div>
       ${o.note ? `<div class="mr-n">${o.note}</div>` : ''}

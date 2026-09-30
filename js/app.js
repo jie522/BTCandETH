@@ -6,7 +6,7 @@ const App = {
   loading: false,
   err: '',
   bt: { tf: '1h', days: 30, res: null, busy: false },
-  TFS: [['4h', '4 小時'], ['1d', '日線'], ['1w', '週線']],
+  TFS: [['8h', '8 小時'], ['1d', '日線'], ['1w', '週線']],
   tier: 'mid',              // 建議參數目前看的風險等級
 
   sym() { return Market.SYMS[Store.settings.symbol]; },
@@ -129,6 +129,7 @@ const App = {
       });
       this.data = { tk, sym, tfs, atrD, at: Date.now(), klAt: Date.now(), h1: null };
       this.loadH1(sym);
+      this.loadSent(sym);
       this.pickTf(this.tf, true);
     } catch (e) {
       this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
@@ -263,7 +264,7 @@ const App = {
 
   priceCardHtml() {
     const { tk, tfs } = this.data, name = this.sym().name;
-    const d7 = tfs['4h'].cs.slice(-42).map(k => k.c);
+    const d7 = tfs['8h'].cs.slice(-21).map(k => k.c);
     const rp = tk.high > tk.low ? Math.max(0, Math.min(100, (tk.price - tk.low) / (tk.high - tk.low) * 100)) : 50;
     const fund = tk.funding >= 0.03 || tk.funding <= -0.01 ? 'warnc' : '';
     return `<div class="card price-card" id="price-card">
@@ -313,36 +314,50 @@ const App = {
       }).join('')}</button>`;
   },
 
-  metersHtml(an, tk) {
-    const tf = this.tf;
-    const rsiNote = an.rsi >= 70 ? '過熱,追多小心' : an.rsi <= 30 ? '超賣,追空小心' : an.rsi >= 55 ? '動能偏強' : an.rsi <= 45 ? '動能偏弱' : '中性';
-    const adxNote = an.adx < 20 ? '盤整,最適合網格' : an.adx < 35 ? '有趨勢,順勢方向較有利' : '強趨勢,網格容易單邊被掃';
-    const dev = isNaN(an.ma200) ? NaN : (an.price / an.ma200 - 1) * 100;
-    const devR = tf === '1w' ? 80 : tf === '1d' ? 40 : 15;
-    const bwNote = an.bwRank <= 25 ? '收窄中,常醞釀突破' : an.bwRank >= 85 ? '波動大,格子可放寬' : '一般';
-    const fNote = an.funding >= 0.03 ? '多方擁擠' : an.funding <= -0.01 ? '空方擁擠' : '正常';
-    return [
-      Viz.meter({ label: 'RSI 動能', v: an.rsi, min: 0, max: 100, text: an.rsi.toFixed(0), note: rsiNote, ticks: [30, 50, 70],
-        cls: an.rsi >= 70 || an.rsi <= 30 ? 'warnc' : '',
-        zones: [{ to: 30, cls: 'z-warn' }, { to: 45, cls: 'z-dn' }, { to: 55, cls: 'z-mid' }, { to: 70, cls: 'z-up' }, { to: 100, cls: 'z-warn' }] }),
-      Viz.meter({ label: 'ADX 趨勢強度', v: an.adx, min: 0, max: 60, text: an.adx.toFixed(0), note: adxNote, ticks: [20, 35],
-        zones: [{ to: 20, cls: 'z-good' }, { to: 35, cls: 'z-mid' }, { to: 60, cls: 'z-warn' }] }),
-      Viz.meter({ label: '離 MA200', v: dev, min: -devR, max: devR, text: fmt.pct(dev, 1), ticks: [0],
-        note: isNaN(dev) ? 'K 線不足' : dev > devR * 0.6 ? '離長均線很遠,留意回歸' : dev < -devR * 0.6 ? '跌深,留意反彈' : dev >= 0 ? '在長均線之上' : '在長均線之下',
-        zones: [{ to: -devR * 0.6, cls: 'z-warn' }, { to: 0, cls: 'z-dn' }, { to: devR * 0.6, cls: 'z-up' }, { to: devR, cls: 'z-warn' }] }),
-      Viz.meter({ label: '布林帶寬(近期分位)', v: an.bwRank, min: 0, max: 100, text: isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0), note: bwNote, ticks: [25, 85],
-        zones: [{ to: 25, cls: 'z-warn' }, { to: 85, cls: 'z-good' }, { to: 100, cls: 'z-mid' }] }),
-      Viz.meter({ label: '資金費率 /8h', v: tk.funding, min: -0.05, max: 0.1, text: tk.funding.toFixed(4) + '%', note: fNote, ticks: [0, 0.03],
-        cls: tk.funding >= 0.03 || tk.funding <= -0.01 ? 'warnc' : '',
-        zones: [{ to: -0.01, cls: 'z-warn' }, { to: 0.03, cls: 'z-good' }, { to: 0.1, cls: 'z-warn' }] }),
-    ].join('');
+  /* 指標儀表卡:週期切換放在卡片最上面,下面是投票結果、技術面、籌碼面 */
+  indCardHtml() {
+    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
+    const sent = this.sentFor(this.tf);
+    const R = Signal.meters(an, cs, sent, tk.funding, this.tf);
+    const tot = R.items.length, pct = k => (R.cnt[k] / tot * 100).toFixed(1);
+    const L = { up: '偏多', down: '偏空', flat: '中性' };
+    const row = m => Viz.meter(Object.assign({}, m, { lean: m.lean, leanText: L[m.lean] + ' · ' + m.leanText }));
+    const tech = R.items.filter(m => m.group === 'tech'), chip = R.items.filter(m => m.group === 'chip');
+    const chipNote = sent ? `Binance 合約 · ${sent.period === '4h' ? '4 小時粒度,近 5 天' : '日粒度,近 30 天'}`
+      : (this.data.sentErr ? '籌碼資料暫時抓不到' : '籌碼資料載入中…');
+    return `<div class="card ind-card" id="ind-card">
+      <div class="card-h"><span class="section-title in">指標儀表</span><span class="hint">切換週期 ↓</span></div>
+      ${this.seg('tf', this.TFS, this.tf)}
+      <div class="vote v-${R.vdir}">
+        <div class="vote-bar"><i class="vb-up" style="width:${pct('up')}%"></i><i class="vb-flat" style="width:${pct('flat')}%"></i><i class="vb-dn" style="width:${pct('down')}%"></i></div>
+        <div class="vote-cnt"><span class="up">偏多 ${R.cnt.up}</span><span>中性 ${R.cnt.flat}</span><span class="down">偏空 ${R.cnt.down}</span></div>
+        <div class="vote-v">${tn}:<b>${R.verdict}</b></div>
+      </div>
+      <div class="ind-group"><span>技術面</span><small>${tn} K 線</small></div>
+      ${tech.map(row).join('')}
+      <div class="ind-group"><span>籌碼面</span><small>${chipNote}</small></div>
+      ${chip.map(row).join('')}
+      <p class="fine in">反向指標(資金費率、散戶多空比)擁擠的一邊容易被洗;投票只是整理,不是預測,要搭配上面的三週期共振一起看。</p>
+    </div>`;
+  },
+
+  /* 籌碼面資料:8 小時看 4h 粒度,日線 / 週線看 1d 粒度(Binance 最多保留 30 天) */
+  sentFor(tf) { const S = this.data && this.data.sent; return S ? S[tf === '8h' ? '4h' : '1d'] || null : null; },
+  async loadSent(sym) {
+    try {
+      const [a, b] = await Promise.all([Market.sentiment(sym, '4h'), Market.sentiment(sym, '1d')]);
+      if (!this.data || this.data.sym !== sym) return;
+      this.data.sent = { '4h': a, '1d': b };
+    } catch (e) { if (this.data) this.data.sentErr = true; }
+    const el = $('#ind-card');
+    if (el && this.tab === 'market') el.outerHTML = this.indCardHtml();
   },
 
   /* ============ 行情頁 ============ */
   renderMarket() {
     const root = $('#page-market');
     if (this.err && !this.data) { root.innerHTML = this.errBox(); return; }
-    if (!this.data) { root.innerHTML = '<div class="card skeleton"><div class="spin"></div>載入 4 小時 / 日線 / 週線行情中…</div>'; return; }
+    if (!this.data) { root.innerHTML = '<div class="card skeleton"><div class="spin"></div>載入 8 小時 / 日線 / 週線行情中…</div>'; return; }
     const { tk, cs, an } = this.data, name = this.sym().name, tn = this.tfName(this.tf);
     const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
     const ma = k => an.ma[k].slice(off);
@@ -352,6 +367,7 @@ const App = {
       ${this.err ? this.errBox() : ''}
       ${this.liveStripHtml()}
       ${this.consensusHtml()}
+      ${this.indCardHtml()}
       <div class="card verdict v-${an.dir}">
         <div class="v-head"><span class="v-tf">${tn} 判讀</span><span class="v-conf">把握度 ${an.strength}</span></div>
         <div class="v-body">${Viz.gauge(an.score)}
@@ -364,18 +380,15 @@ const App = {
       ${this.sugCardHtml()}
       <div class="card">
         <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
+        ${this.seg('tf', this.TFS, this.tf)}
         <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間</div>
         ${Viz.candles({
-          cs: view, h: 260, year: this.tf === '1w', intraday: this.tf === '4h',
+          cs: view, h: 260, year: this.tf === '1w', intraday: this.tf === '8h',
           overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
           band: { lo: sug.lower, hi: sug.upper },
           lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }],
           tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
         })}
-      </div>
-      <div class="card">
-        <div class="section-title in">指標儀表 · ${tn}</div>
-        ${this.metersHtml(an, tk)}
       </div>
       <p class="fine">訊號只是機率上的參考,不是預測。網格賺的是震盪,方向選錯或趨勢強時會累積虧損倉位,務必控制槓桿與止損。</p>`;
     Viz.bind(root);
@@ -485,7 +498,7 @@ const App = {
       if (m < P.lower || m > P.upper) return 'z-risk';
       return '';
     };
-    const src = this.data ? this.data.tfs['4h'].cs.slice(-120) : [];
+    const src = this.data ? this.data.tfs['8h'].cs.slice(-90) : [];
     const lvStep = Math.ceil(r.levels.length / 60);
     const lines = r.levels.filter((y, i) => i % lvStep === 0).map(y => ({ y, cls: 'ch-lvl', range: true }));
     lines.push({ y: P.lower, cls: 'ch-edge', label: fmt.n(P.lower, 0) }, { y: P.upper, cls: 'ch-edge', label: fmt.n(P.upper, 0) });
@@ -508,7 +521,7 @@ const App = {
         ${this.kpi('總保證金', fmt.n(r.M, 0) + ' U', '', '投資額 + 額外保證金')}
       </div>
       <div class="card">
-        <div class="card-h"><span class="section-title in">格線 · 近 20 天 4 小時 K</span><span class="hint">按住滑動</span></div>
+        <div class="card-h"><span class="section-title in">格線 · 近 30 天 8 小時 K</span><span class="hint">按住滑動</span></div>
         <div class="legend"><i class="lg lg-lvl"></i>格線 <i class="lg lg-edge"></i>上下限 <i class="lg lg-liq"></i>強平 <i class="lg lg-now"></i>現價</div>
         ${src.length ? Viz.candles({ cs: src, lines, band: { lo: P.lower, hi: P.upper }, h: 260, intraday: true }) : ''}
         <details class="lv"><summary>全部 ${r.levels.length} 條格線價</summary>
