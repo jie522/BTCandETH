@@ -64,7 +64,7 @@ const Signal = {
     return {
       price, ma20, ma50, ma200, rsi, adx, atrPct, bwRank, funding,
       pdi: A.pdi, mdi: A.mdi, score, dir, why, strength, reasons, sug,
-      ma: { ma50: Ind.sma(c, 50), ma200: Ind.sma(c, 200) },
+      ma: { ma20: Ind.sma(c, 20), ma50: Ind.sma(c, 50), ma200: Ind.sma(c, 200) },
     };
   },
 

@@ -6,6 +6,7 @@ const App = {
   loading: false,
   err: '',
   bt: { tf: '1h', days: 30, res: null, busy: false },
+  TFS: [['4h', '4 小時'], ['1d', '日線'], ['1w', '週線']],
 
   sym() { return Market.SYMS[Store.settings.symbol]; },
   opt() { const s = Store.settings; return { fee: s.fee, mmr: s.mmr, price: this.data ? this.data.tk.price : 0 }; },
@@ -18,11 +19,13 @@ const App = {
     document.addEventListener('input', e => this.onInput(e));
     this.go('market');
     this.load();
+    setInterval(() => this.tick(), 15000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.tick(); });
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   },
 
   /* ---------- 分頁切換 ---------- */
-  go(tab) {
+  go(tab, keepScroll) {
     this.tab = tab;
     $$('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
@@ -32,29 +35,7 @@ const App = {
     if (tab === 'calc') this.renderCalc();
     if (tab === 'backtest') this.renderBacktest();
     if (tab === 'saved') this.renderSaved();
-    window.scrollTo(0, 0);
-  },
-
-  /* ---------- 載入行情 ---------- */
-  async load(force) {
-    if (this.loading) return;
-    if (force) Market._cache = {};
-    this.loading = true; this.err = '';
-    if (this.tab === 'market') this.renderMarket();
-    try {
-      const sym = Store.settings.symbol;
-      const [tk, cs] = await Promise.all([Market.ticker(sym), Market.klines(sym, this.tf, 300)]);
-      const an = Signal.analyze(cs, tk.funding, Store.settings.fee);
-      let atrD = an.atrPct;
-      if (this.tf !== '1d') {
-        try { const d = await Market.klines(sym, '1d', 300); atrD = Ind.last(Ind.atr(d, 14)) / tk.price * 100; } catch (e) { atrD = NaN; }
-      }
-      this.data = { tk, cs, an, sym, tf: this.tf, atrD };
-    } catch (e) {
-      this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
-    }
-    this.loading = false;
-    this.go(this.tab);
+    if (!keepScroll) window.scrollTo(0, 0);
   },
 
   /* 其他頁需要現價時用:沒有就補抓 */
@@ -88,14 +69,19 @@ const App = {
     else if (a === 'export') this.exportData();
     else if (a === 'import') this.openImport();
     else if (a === 'add-live') this.openLive();
+    else if (a === 'tf-pick') this.pickTf(b.dataset.v);
+    else if (a === 'guide-done') { Store.settings.guideDone = true; Store.saveSettings(); this.renderMarket(); }
+    else if (a === 'go-saved') this.go('saved');
+    else if (a === 'fill-safe') this.fillSafe();
+    else if (a === 'bt-dir') { Store.params.dir = b.dataset.v; Store.saveParams(); if (this.bt.res) this.bt.res.P.dir = b.dataset.v; this.renderBacktest(); }
     else if (a === 'edit-live') this.openLive(id);
   },
 
   onSeg(el) {
     const k = el.dataset.seg, v = el.dataset.v;
     const P = Store.params;
-    if (k === 'tf') { this.tf = v; this.load(); return; }
-    if (k === 'dir' || k === 'mode') { P[k] = v; Store.saveParams(); $$(`[data-seg="${k}"]`).forEach(x => x.classList.toggle('active', x === el)); this.updateCalc(); return; }
+    if (k === 'tf') { this.pickTf(v); return; }
+    if (k === 'dir' || k === 'mode') { P[k] = v; Store.saveParams(); $$(`[data-seg="${k}"]`).forEach(x => x.classList.toggle('active', x === el)); if (this.bt.res) this.bt.res = null; this.updateCalc(); return; }
     if (k === 'bt-tf') { this.bt.tf = v; this.renderBacktest(); return; }
     if (k === 'bt-days') { this.bt.days = +v; this.renderBacktest(); return; }
   },
@@ -105,6 +91,8 @@ const App = {
     if (el.dataset.p) {
       Store.params[el.dataset.p] = el.value === '' ? '' : +el.value;
       Store.saveParams();
+      this.syncInputs(el);
+      this.bt.res = null;
       this.updateCalc();
     }
   },
@@ -121,110 +109,271 @@ const App = {
     return `<div class="card err-card"><p>${esc(this.err)}</p><button class="btn" data-act="refresh">重試</button></div>`;
   },
 
+  /* ---------- 載入行情:4 小時 / 日線 / 週線一起抓,切換週期不用重抓 ---------- */
+  async load(force) {
+    if (this.loading) return;
+    if (force) Market._cache = {};
+    this.loading = true; this.err = '';
+    if (this.tab === 'market' && !this.data) this.renderMarket();
+    try {
+      const sym = Store.settings.symbol;
+      const [tk, ...ks] = await Promise.all([Market.ticker(sym), ...this.TFS.map(([tf]) => Market.klines(sym, tf, 300))]);
+      const tfs = {};
+      this.TFS.forEach(([tf], i) => { tfs[tf] = { cs: ks[i], an: Signal.analyze(ks[i], tk.funding, Store.settings.fee) }; });
+      this.data = { tk, sym, tfs, atrD: tfs['1d'].an.atrPct, at: Date.now(), klAt: Date.now() };
+      this.pickTf(this.tf, true);
+    } catch (e) {
+      this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
+    }
+    this.loading = false;
+    this.go(this.tab, true);
+  },
+
+  /* 換判讀週期:資料已經在手上,直接換指標就好 */
+  pickTf(tf, silent) {
+    this.tf = tf;
+    if (this.data) Object.assign(this.data, { tf, cs: this.data.tfs[tf].cs, an: this.data.tfs[tf].an });
+    if (!silent) { this.renderMarket(); }
+  },
+
+  /* 每 15 秒更新報價(只換價格卡 / 機器人清單,不整頁重畫);K 線每 5 分鐘重抓一次 */
+  async tick() {
+    if (document.hidden || !this.data || this.loading) return;
+    if (this.tab === 'market' && Date.now() - this.data.klAt > 300000) { this.load(true); return; }
+    try {
+      const tk = await Market.ticker(Store.settings.symbol);
+      if (!this.data || this.data.sym !== Store.settings.symbol) return;
+      this.data.tk = tk; this.data.at = Date.now();
+      const pc = $('#price-card');
+      if (pc && this.tab === 'market') pc.outerHTML = this.priceCardHtml();
+      if (this.tab === 'saved' && !$('#modal')) this.renderSaved();
+    } catch (e) { /* 下次再試 */ }
+  },
+
+  lean(s) { return s >= 3 ? '偏多' : s <= -3 ? '偏空' : s > 0 ? '略偏多' : s < 0 ? '略偏空' : '中性'; },
+  tfName(tf) { return (this.TFS.find(x => x[0] === tf) || [tf, tf])[1]; },
+
+  /* 風險等級:取離現價最近那一側的強平價
+   * 危險 = 距強平 < 10% 或強平價離區間邊界 < 3%;注意 = < 20% 或 < 10% */
+  risk(dir, liqDown, liqUp, px, lower, upper) {
+    const cand = [];
+    if (liqDown > 0 && dir !== 'short') cand.push({ liq: liqDown, side: 'down', dist: (px - liqDown) / px * 100, edge: (lower - liqDown) / lower * 100 });
+    if (liqUp > 0 && dir !== 'long') cand.push({ liq: liqUp, side: 'up', dist: (liqUp - px) / px * 100, edge: (liqUp - upper) / upper * 100 });
+    if (!cand.length || !px) return { level: 'ok', label: '—', dist: NaN, edge: NaN, liq: NaN };
+    const c = cand.sort((a, b) => a.dist - b.dist)[0];
+    c.level = 'ok'; c.label = '安全';
+    if (c.dist < 10 || c.edge < 3) { c.level = 'bad'; c.label = '危險'; }
+    else if (c.dist < 20 || c.edge < 10) { c.level = 'warn'; c.label = '注意'; }
+    return c;
+  },
+
+  /* 建議止損:區間外 3%,但一定留在強平價內側(離強平至少 2%),不然止損還沒觸發就先被強平 */
+  stops(P, r) {
+    let down = NaN, up = NaN;
+    if (P.dir !== 'short') {
+      let v = P.lower * 0.97;
+      if (!isNaN(r.liqDown)) v = Math.max(v, r.liqDown * 1.02);
+      if (v < P.lower) down = Grid.nice(v, P.lower);
+    }
+    if (P.dir !== 'long') {
+      let v = P.upper * 1.03;
+      if (!isNaN(r.liqUp)) v = Math.min(v, r.liqUp * 0.98);
+      if (v > P.upper) up = Grid.nice(v, P.upper);
+    }
+    return { down, up };
+  },
+
+  /* ============ 行情頁元件 ============ */
+  guideHtml() {
+    if (Store.settings.guideDone) return '';
+    return `<div class="card guide">
+      <div class="guide-h">三步驟開一組派網網格</div>
+      <ol>
+        <li><b>看方向</b>:三個週期同方向最可靠;分歧時用中性網格或縮小資金</li>
+        <li><b>帶入試算</b>:按「一鍵帶入試算」,用拉桿微調,看風險階梯離強平多遠</li>
+        <li><b>回測再下單</b>:比較做多 / 中性 / 做空,照「派網設定對照」填進派網</li>
+      </ol>
+      <button class="btn sm" data-act="guide-done">知道了</button>
+    </div>`;
+  },
+
+  priceCardHtml() {
+    const { tk, tfs } = this.data, name = this.sym().name;
+    const d7 = tfs['4h'].cs.slice(-42).map(k => k.c);
+    const rp = tk.high > tk.low ? Math.max(0, Math.min(100, (tk.price - tk.low) / (tk.high - tk.low) * 100)) : 50;
+    const fund = tk.funding >= 0.03 || tk.funding <= -0.01 ? 'warnc' : '';
+    return `<div class="card price-card" id="price-card">
+      <div class="pc-top"><span class="pc-name">${name}/USDT 永續</span><span class="pc-src"><i class="live-dot"></i>${esc(Market.source)} · ${new Date(this.data.at).toTimeString().slice(0, 8)}</span></div>
+      <div class="pc-mid">
+        <div><div class="pc-price ${fmt.cls(tk.change)}">${fmt.price(tk.price)}</div>
+          <span class="chg-pill ${fmt.cls(tk.change)}">${fmt.pct(tk.change)} · 24h</span></div>
+        <div class="pc-spark ${fmt.cls(d7[d7.length - 1] - d7[0])}">${Viz.spark(d7)}<span>近 7 天</span></div>
+      </div>
+      <div class="day-range"><span>${fmt.price(tk.low)}</span><div class="dr-bar"><i style="left:${rp}%"></i></div><span>${fmt.price(tk.high)}</span></div>
+      <div class="pc-foot"><span>24h 低</span><span>資金費率 <b class="${fund}">${tk.funding.toFixed(4)}%</b> /8h</span><span>24h 高</span></div>
+    </div>`;
+  },
+
+  consensusHtml() {
+    const T = this.data.tfs;
+    const tiles = this.TFS.map(([tf, t]) => {
+      const a = T[tf].an;
+      return `<button type="button" class="tf-tile${tf === this.tf ? ' cur' : ''}" data-act="tf-pick" data-v="${tf}">
+        <span class="tf-name">${t}</span>${Viz.gauge(a.score, 'sm')}
+        <b class="tf-dir ${a.score >= 1 ? 'up' : a.score <= -1 ? 'down' : ''}">${this.lean(a.score)}</b>
+        <span class="tf-sc">${a.score > 0 ? '+' : ''}${a.score} · ADX ${a.adx.toFixed(0)}</span></button>`;
+    }).join('');
+    const sc = this.TFS.map(([tf]) => T[tf].an.score), w = T['1w'].an.score;
+    let cls = 'neutral', title = '週期分歧', text;
+    if (sc.every(s => s >= 1)) { cls = 'long'; title = '三週期共振 · 偏多'; text = '長短線方向一致,做多網格較有利;RSI 過熱時別追高,區間放在回檔支撐區。'; }
+    else if (sc.every(s => s <= -1)) { cls = 'short'; title = '三週期共振 · 偏空'; text = '長短線方向一致,做空網格較有利;超賣時小心反彈,區間放在反彈壓力區。'; }
+    else if (w >= 1) text = '長線偏多、短線不同調:可等短線回穩再做多,或先用中性網格、縮小資金。';
+    else if (w <= -1) text = '長線偏空、短線不同調:可等反彈結束再做空,或先用中性網格、縮小資金。';
+    else text = '長線方向不明:中性網格較穩,資金與槓桿放小。';
+    return `<div class="card consensus c-${cls}">
+      <div class="cs-head"><span class="cs-title">${title}</span><span class="hint">點週期看細節</span></div>
+      <div class="tf-tiles">${tiles}</div>
+      <p class="cs-text">${text}</p></div>`;
+  },
+
+  liveStripHtml() {
+    const px = this.data.tk.price;
+    const live = Store.grids.filter(g => g.live && g.symbol === Store.settings.symbol);
+    if (!live.length) return '';
+    return `<button type="button" class="card live-strip" data-act="go-saved">
+      <div class="ls-h"><span>我的派網機器人</span><span class="hint">查看 ›</span></div>
+      ${live.map(g => {
+        const h = this.liveCheck(g, px);
+        return `<div class="ls-row"><span class="badge h-${h.level}">${h.label}</span><span class="ls-n">${esc(g.name)}</span>
+          <span class="ls-d">距強平 <b class="${h.level === 'bad' ? 'liq' : h.level === 'warn' ? 'warnc' : ''}">${isNaN(h.dist) ? '—' : h.dist.toFixed(1) + '%'}</b></span></div>`;
+      }).join('')}</button>`;
+  },
+
+  metersHtml(an, tk) {
+    const tf = this.tf;
+    const rsiNote = an.rsi >= 70 ? '過熱,追多小心' : an.rsi <= 30 ? '超賣,追空小心' : an.rsi >= 55 ? '動能偏強' : an.rsi <= 45 ? '動能偏弱' : '中性';
+    const adxNote = an.adx < 20 ? '盤整,最適合網格' : an.adx < 35 ? '有趨勢,順勢方向較有利' : '強趨勢,網格容易單邊被掃';
+    const dev = isNaN(an.ma200) ? NaN : (an.price / an.ma200 - 1) * 100;
+    const devR = tf === '1w' ? 80 : tf === '1d' ? 40 : 15;
+    const bwNote = an.bwRank <= 25 ? '收窄中,常醞釀突破' : an.bwRank >= 85 ? '波動大,格子可放寬' : '一般';
+    const fNote = an.funding >= 0.03 ? '多方擁擠' : an.funding <= -0.01 ? '空方擁擠' : '正常';
+    return [
+      Viz.meter({ label: 'RSI 動能', v: an.rsi, min: 0, max: 100, text: an.rsi.toFixed(0), note: rsiNote, ticks: [30, 50, 70],
+        cls: an.rsi >= 70 || an.rsi <= 30 ? 'warnc' : '',
+        zones: [{ to: 30, cls: 'z-warn' }, { to: 45, cls: 'z-dn' }, { to: 55, cls: 'z-mid' }, { to: 70, cls: 'z-up' }, { to: 100, cls: 'z-warn' }] }),
+      Viz.meter({ label: 'ADX 趨勢強度', v: an.adx, min: 0, max: 60, text: an.adx.toFixed(0), note: adxNote, ticks: [20, 35],
+        zones: [{ to: 20, cls: 'z-good' }, { to: 35, cls: 'z-mid' }, { to: 60, cls: 'z-warn' }] }),
+      Viz.meter({ label: '離 MA200', v: dev, min: -devR, max: devR, text: fmt.pct(dev, 1), ticks: [0],
+        note: isNaN(dev) ? 'K 線不足' : dev > devR * 0.6 ? '離長均線很遠,留意回歸' : dev < -devR * 0.6 ? '跌深,留意反彈' : dev >= 0 ? '在長均線之上' : '在長均線之下',
+        zones: [{ to: -devR * 0.6, cls: 'z-warn' }, { to: 0, cls: 'z-dn' }, { to: devR * 0.6, cls: 'z-up' }, { to: devR, cls: 'z-warn' }] }),
+      Viz.meter({ label: '布林帶寬(近期分位)', v: an.bwRank, min: 0, max: 100, text: isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0), note: bwNote, ticks: [25, 85],
+        zones: [{ to: 25, cls: 'z-warn' }, { to: 85, cls: 'z-good' }, { to: 100, cls: 'z-mid' }] }),
+      Viz.meter({ label: '資金費率 /8h', v: tk.funding, min: -0.05, max: 0.1, text: tk.funding.toFixed(4) + '%', note: fNote, ticks: [0, 0.03],
+        cls: tk.funding >= 0.03 || tk.funding <= -0.01 ? 'warnc' : '',
+        zones: [{ to: -0.01, cls: 'z-warn' }, { to: 0.03, cls: 'z-good' }, { to: 0.1, cls: 'z-warn' }] }),
+    ].join('');
+  },
+
   /* ============ 行情頁 ============ */
   renderMarket() {
     const root = $('#page-market');
     if (this.err && !this.data) { root.innerHTML = this.errBox(); return; }
-    if (!this.data) { root.innerHTML = '<div class="card skeleton">載入行情中…</div>'; return; }
-    const { tk, cs, an } = this.data, name = this.sym().name;
-    const lean = an.score >= 3 ? '偏多' : an.score <= -3 ? '偏空' : an.score > 0 ? '略偏多' : an.score < 0 ? '略偏空' : '方向不明';
-    const meterPos = (an.score + 5) / 10 * 100;
-    const ind = [
-      ['MA20', fmt.price(an.ma20), tk.price > an.ma20 ? 'up' : 'down'],
-      ['MA50', fmt.price(an.ma50), tk.price > an.ma50 ? 'up' : 'down'],
-      ['MA200', isNaN(an.ma200) ? '—' : fmt.price(an.ma200), tk.price > an.ma200 ? 'up' : 'down'],
-      ['RSI(14)', an.rsi.toFixed(0), an.rsi >= 70 ? 'warnc' : an.rsi <= 30 ? 'warnc' : ''],
-      ['ADX 趨勢強度', an.adx.toFixed(0), an.adx >= 25 ? 'accent' : ''],
-      ['ATR 單根波幅', an.atrPct.toFixed(2) + '%', ''],
-      ['布林帶寬分位', isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0), ''],
-      ['資金費率/8h', an.funding.toFixed(4) + '%', an.funding >= 0.03 || an.funding <= -0.01 ? 'warnc' : ''],
-    ];
-    const view = cs.slice(-100), off = cs.length - view.length;
-    const sug = an.sug;
+    if (!this.data) { root.innerHTML = '<div class="card skeleton"><div class="spin"></div>載入 4 小時 / 日線 / 週線行情中…</div>'; return; }
+    const { tk, cs, an } = this.data, name = this.sym().name, tn = this.tfName(this.tf);
+    const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
+    const ma = k => an.ma[k].slice(off);
+    const sr = Grid.calc(Object.assign({ capital: 1000, extra: 0 }, sug), { fee: Store.settings.fee, mmr: Store.settings.mmr, price: tk.price });
     root.innerHTML = `
-      <div class="card price-card">
-        <div class="pc-top"><span class="pc-name">${name}/USDT 永續</span><span class="pc-src">${esc(Market.source)} · ${new Date().toTimeString().slice(0, 5)}</span></div>
-        <div class="pc-price ${fmt.cls(tk.change)}">${fmt.price(tk.price)}</div>
-        <div class="pc-sub"><span class="${fmt.cls(tk.change)}">${fmt.pct(tk.change)}</span> · 24h 高 ${fmt.price(tk.high)} · 低 ${fmt.price(tk.low)}</div>
-      </div>
+      ${this.guideHtml()}
+      ${this.priceCardHtml()}
       ${this.err ? this.errBox() : ''}
-      <div class="section-title">判讀週期</div>
-      ${this.seg('tf', [['4h', '4 小時'], ['1d', '日線'], ['1w', '週線']], this.tf)}
+      ${this.liveStripHtml()}
+      ${this.consensusHtml()}
       <div class="card verdict v-${an.dir}">
-        <div class="v-head"><span class="v-badge">${Signal.DIR_LABEL[an.dir]}</span><span class="v-conf">把握度 ${an.strength}</span></div>
-        <div class="v-title">${name} 目前${lean}</div>
+        <div class="v-head"><span class="v-tf">${tn} 判讀</span><span class="v-conf">把握度 ${an.strength}</span></div>
+        <div class="v-body">${Viz.gauge(an.score)}
+          <div class="v-side"><div class="v-score">${an.score > 0 ? '+' : ''}${an.score}<small>/ ±5</small></div>
+          <div class="v-title">${name} ${this.lean(an.score)}</div><span class="v-badge">${Signal.DIR_LABEL[an.dir]}</span></div></div>
         <div class="v-why">${esc(an.why)}</div>
-        <div class="meter"><i style="left:${meterPos}%"></i></div>
-        <div class="meter-l"><span>偏空</span><span>方向分數 ${an.score > 0 ? '+' : ''}${an.score} / ±5</span><span>偏多</span></div>
-        <ul class="reasons">${an.reasons.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul>
+        <details class="reasons-d" open><summary>判讀依據(${an.reasons.length} 項)</summary>
+          <ul class="reasons">${an.reasons.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul></details>
       </div>
-      <div class="card">
-        <div class="section-title in">建議起手參數(可到「試算」再調整)</div>
+      <div class="card sug-card">
+        <div class="section-title in">建議起手參數 · ${tn}</div>
         <div class="sug-grid">
           <div><span>方向</span><b>${Signal.DIR_LABEL[sug.dir]}</b></div>
           <div><span>區間</span><b>${fmt.n(sug.lower, 0)} ~ ${fmt.n(sug.upper, 0)}</b></div>
-          <div><span>格數</span><b>${sug.n}</b></div>
+          <div><span>格數</span><b>${sug.n} 格</b></div>
           <div><span>槓桿</span><b>${sug.lev}x</b></div>
         </div>
-        <button class="btn primary block" data-act="apply">套用到試算</button>
+        ${Viz.rangeBar({ lower: sug.lower, upper: sug.upper, price: tk.price, liqDown: sug.dir !== 'short' ? sr.liqDown : NaN, liqUp: sug.dir !== 'long' ? sr.liqUp : NaN })}
+        <button class="btn primary block big" data-act="apply">一鍵帶入試算 →</button>
       </div>
-      <div class="section-title">指標</div>
-      <div class="ind-grid">${ind.map(([l, v, c]) => `<div class="ind"><div class="i-l">${l}</div><div class="i-v ${c}">${v}</div></div>`).join('')}</div>
       <div class="card">
-        <div class="legend"><i class="lg lg-price"></i>價格 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間</div>
-        ${Chart.svg({
-          series: [
-            { d: view.map(k => k.c), cls: 'ch-price' },
-            { d: an.ma.ma50.slice(off), cls: 'ch-ma50' },
-            { d: an.ma.ma200.slice(off), cls: 'ch-ma200' },
-          ],
+        <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
+        <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間</div>
+        ${Viz.candles({
+          cs: view, h: 260, year: this.tf === '1w', intraday: this.tf === '4h',
+          overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
           band: { lo: sug.lower, hi: sug.upper },
           lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }],
-          x: [fmt.date(view[0].t, this.tf === '1w'), fmt.date(view[view.length - 1].t, this.tf === '1w')],
+          tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
         })}
       </div>
+      <div class="card">
+        <div class="section-title in">指標儀表 · ${tn}</div>
+        ${this.metersHtml(an, tk)}
+      </div>
       <p class="fine">訊號只是機率上的參考,不是預測。網格賺的是震盪,方向選錯或趨勢強時會累積虧損倉位,務必控制槓桿與止損。</p>`;
-  },
-
-  applySuggestion() {
-    const s = this.data.an.sug;
-    Object.assign(Store.params, { dir: s.dir, mode: s.mode, lower: s.lower, upper: s.upper, n: s.n, lev: s.lev });
-    Store.saveParams();
-    Toast.show('已套用建議參數');
-    this.go('calc');
+    Viz.bind(root);
   },
 
   /* ============ 試算頁 ============ */
   renderCalc() {
     const P = Store.params;
+    const px = this.data ? this.data.tk.price : ((+P.lower + +P.upper) / 2 || 0);
+    const pr = px ? { min: Grid.nice(px * 0.5, px), max: Grid.nice(px * 1.5, px), step: Math.pow(10, Math.floor(Math.log10(px)) - 3) } : null;
+    const sl = (k, min, max, step) => `<input type="range" class="slider" data-p="${k}" min="${min}" max="${max}" step="${step}" value="${P[k]}" aria-label="${k}">`;
+    const dirBtn = (d, t, sub) => `<button type="button" data-seg="dir" data-v="${d}" class="dir-btn d-${d}${P.dir === d ? ' active' : ''}"><b>${t}</b><small>${sub}</small></button>`;
     $('#page-calc').innerHTML = `
-      <div class="card">
-        <label class="lbl">方向</label>
-        ${this.seg('dir', [['long', '做多'], ['neutral', '中性'], ['short', '做空']], P.dir)}
-        <label class="lbl">格線間距</label>
-        ${this.seg('mode', [['arith', '等差(價差相同)'], ['geo', '等比(漲幅相同)']], P.mode)}
+      <div class="card step">
+        <div class="step-h"><i>1</i>方向</div>
+        <div class="dir-seg">${dirBtn('long', '做多', '緩漲 / 回檔')}${dirBtn('neutral', '中性', '區間震盪')}${dirBtn('short', '做空', '緩跌 / 反彈')}</div>
+      </div>
+      <div class="card step">
+        <div class="step-h"><i>2</i>價格區間<span class="step-v" id="v-range"></span></div>
         <div class="f-row">
-          <div class="f"><label class="lbl" for="p-lower">下界價</label><input id="p-lower" data-p="lower" type="number" inputmode="decimal" value="${P.lower}"></div>
-          <div class="f"><label class="lbl" for="p-upper">上界價</label><input id="p-upper" data-p="upper" type="number" inputmode="decimal" value="${P.upper}"></div>
+          <div class="f"><label class="lbl" for="p-lower">下限</label><input id="p-lower" data-p="lower" type="number" inputmode="decimal" value="${P.lower}"></div>
+          <div class="f"><label class="lbl" for="p-upper">上限</label><input id="p-upper" data-p="upper" type="number" inputmode="decimal" value="${P.upper}"></div>
         </div>
-        <div class="f-row">
-          <div class="f"><label class="lbl" for="p-n">格數</label><input id="p-n" data-p="n" type="number" inputmode="numeric" value="${P.n}"></div>
-          <div class="f"><label class="lbl" for="p-lev">槓桿 x</label><input id="p-lev" data-p="lev" type="number" inputmode="decimal" value="${P.lev}"></div>
-        </div>
-        <div class="f-row">
-          <div class="f"><label class="lbl" for="p-cap">投資額 USDT</label><input id="p-cap" data-p="capital" type="number" inputmode="decimal" value="${P.capital}"></div>
-          <div class="f"><label class="lbl" for="p-extra">額外保證金 USDT</label><input id="p-extra" data-p="extra" type="number" inputmode="decimal" value="${P.extra || 0}"></div>
-        </div>
+        ${pr ? `<div class="sl-pair"><span>下限</span>${sl('lower', pr.min, pr.max, pr.step)}</div><div class="sl-pair"><span>上限</span>${sl('upper', pr.min, pr.max, pr.step)}</div>` : ''}
         <div class="chips">
+          ${this.data ? '<button class="chip accent-chip" data-act="apply">用建議區間</button>' : ''}
           <button class="chip" data-act="quick" data-v="5">現價 ±5%</button>
           <button class="chip" data-act="quick" data-v="10">±10%</button>
           <button class="chip" data-act="quick" data-v="15">±15%</button>
           <button class="chip" data-act="quick" data-v="25">±25%</button>
         </div>
+        <label class="lbl">格線間距</label>
+        ${this.seg('mode', [['arith', '等差(價差相同)'], ['geo', '等比(漲幅相同)']], P.mode)}
       </div>
-      <div id="calc-out"></div>`;
+      <div class="card step">
+        <div class="step-h"><i>3</i>格數與槓桿</div>
+        <div class="sl-row"><span>格數</span>${sl('n', 2, 200, 1)}<input class="num" data-p="n" type="number" inputmode="numeric" value="${P.n}" aria-label="格數"></div>
+        <div class="sl-row"><span>槓桿</span>${sl('lev', 1, 100, 1)}<input class="num" data-p="lev" type="number" inputmode="decimal" value="${P.lev}" aria-label="槓桿"></div>
+      </div>
+      <div class="card step">
+        <div class="step-h"><i>4</i>資金</div>
+        <div class="f-row">
+          <div class="f"><label class="lbl" for="p-cap">投資額 USDT</label><input id="p-cap" data-p="capital" type="number" inputmode="decimal" value="${P.capital}"></div>
+          <div class="f"><label class="lbl" for="p-extra">額外保證金 USDT</label><input id="p-extra" data-p="extra" type="number" inputmode="decimal" value="${P.extra || 0}"></div>
+        </div>
+        <div class="chips" id="safe-chip"></div>
+      </div>
+      <div id="calc-out"></div>
+      <div id="calc-sticky" class="sticky-sum"></div>`;
     this.updateCalc();
-    if (!this.data) this.ensureData().then(() => this.tab === 'calc' && this.updateCalc());
+    if (!this.data) this.ensureData().then(() => this.tab === 'calc' && this.renderCalc());
   },
 
   quickRange(pct) {
@@ -234,44 +383,81 @@ const App = {
     P.lower = Grid.nice(px * (1 - pct / 100), px);
     P.upper = Grid.nice(px * (1 + pct / 100), px);
     Store.saveParams();
-    $('#p-lower').value = P.lower; $('#p-upper').value = P.upper;
+    this.syncInputs();
     this.updateCalc();
   },
 
+  /* 拉桿與數字框是同一個參數:改一個,另一個跟著變 */
+  syncInputs(except) {
+    const P = Store.params;
+    $$('[data-p]').forEach(x => { if (x !== except && P[x.dataset.p] !== undefined) x.value = P[x.dataset.p]; });
+  },
+
+  fillSafe() {
+    const P = Store.params, r = Grid.calc(P, this.opt());
+    if (!(r.topUp > 0.5)) return;
+    P.extra = Math.ceil((+P.extra || 0) + r.topUp);
+    Store.saveParams(); this.syncInputs(); this.updateCalc();
+    Toast.show('額外保證金已補到 ' + P.extra + ' USDT');
+  },
+
   updateCalc() {
-    const out = $('#calc-out');
+    const out = $('#calc-out'), st = $('#calc-sticky');
     if (!out) return;
     const P = Store.params, err = Grid.validate(P);
-    if (err) { out.innerHTML = `<div class="card muted-card">${esc(err)}</div>`; return; }
-    const o = this.opt(), r = Grid.calc(P, o);
-    const px = o.price;
-    const lines = r.levels.map(y => ({ y, cls: 'ch-lvl', range: true }));
+    const vr = $('#v-range');
+    if (vr) vr.textContent = err ? '' : '寬 ' + ((P.upper / P.lower - 1) * 100).toFixed(1) + '%';
+    if (err) {
+      out.innerHTML = `<div class="card muted-card">${esc(err)}</div>`;
+      st.innerHTML = `<span class="warn-t">${esc(err)}</span>`;
+      $('#safe-chip').innerHTML = '';
+      return;
+    }
+    const o = this.opt(), r = Grid.calc(P, o), px = o.price;
+    const k = this.risk(P.dir, r.liqDown, r.liqUp, px, P.lower, P.upper);
+    const sp = this.stops(P, r);
+    $('#safe-chip').innerHTML = r.topUp > 0.5
+      ? `<button class="chip warn-chip" data-act="fill-safe">強平離區間不到 10%:一鍵補額外保證金 +${fmt.n(Math.ceil(r.topUp), 0)}</button>` : '<span class="ok-t">保證金足夠,強平價離區間 10% 以上</span>';
+
+    const rows = [
+      { y: P.upper, label: '上限', cls: 'l-edge' }, { y: P.lower, label: '下限', cls: 'l-edge' },
+      { y: px, label: '現價', cls: 'l-now', now: true },
+      { y: sp.down, label: '建議止損', cls: 'l-stop' }, { y: sp.up, label: '建議止損', cls: 'l-stop' },
+      { y: r.liqDown, label: '強平', cls: 'l-liq' }, { y: r.liqUp, label: '強平', cls: 'l-liq' },
+    ];
+    const zoneOf = (a, b) => {
+      const m = (a.y + b.y) / 2;
+      if (m >= P.lower && m <= P.upper) return 'z-grid';
+      if ((r.liqDown > 0 && m < r.liqDown) || (r.liqUp > 0 && m > r.liqUp)) return 'z-dead';
+      if (m < P.lower || m > P.upper) return 'z-risk';
+      return '';
+    };
+    const src = this.data ? this.data.tfs['4h'].cs.slice(-120) : [];
+    const lvStep = Math.ceil(r.levels.length / 60);
+    const lines = r.levels.filter((y, i) => i % lvStep === 0).map(y => ({ y, cls: 'ch-lvl', range: true }));
     lines.push({ y: P.lower, cls: 'ch-edge', label: fmt.n(P.lower, 0) }, { y: P.upper, cls: 'ch-edge', label: fmt.n(P.upper, 0) });
-    if (!isNaN(r.liqDown)) lines.push({ y: r.liqDown, cls: 'ch-liq', label: '強平 ' + fmt.n(r.liqDown, 0) });
-    if (!isNaN(r.liqUp)) lines.push({ y: r.liqUp, cls: 'ch-liq', label: '強平 ' + fmt.n(r.liqUp, 0) });
+    if (!isNaN(r.liqDown)) lines.push({ y: r.liqDown, cls: 'ch-liq', label: fmt.n(r.liqDown, 0) });
+    if (!isNaN(r.liqUp)) lines.push({ y: r.liqUp, cls: 'ch-liq', label: fmt.n(r.liqUp, 0) });
     if (px) lines.push({ y: px, cls: 'ch-now', label: fmt.n(px, 0) });
-    const cs = this.data ? this.data.cs.slice(-90) : [];
-    const liqTxt = (d, v, edge) => `${fmt.n(v, 0)}<small>(${d} ${fmt.n(Math.abs(v - edge) / edge * 100, 1)}%)</small>`;
 
     out.innerHTML = `
+      <div class="card risk-card r-${k.level}">
+        <div class="rc-head"><b>風險階梯</b><span class="badge h-${k.level}">${k.label}</span></div>
+        <div class="rc-sum">${isNaN(k.dist) ? '' : `現價離強平 <b class="${k.level === 'bad' ? 'liq' : k.level === 'warn' ? 'warnc' : ''}">${k.dist.toFixed(1)}%</b>${this.data && this.data.atrD ? `,約 ${(k.dist / this.data.atrD).toFixed(1)} 天的日均波動` : ''}`}</div>
+        ${Viz.ladder(rows, px, zoneOf)}
+        <div class="ld-legend"><span><i class="z-grid"></i>網格區間</span><span><i class="z-risk"></i>出區間、還沒強平</span><span><i class="z-dead"></i>強平</span></div>
+      </div>
       ${r.warns.map(w => `<div class="warn w-${w.level}">${esc(w.text)}</div>`).join('')}
       <div class="kpi-grid">
-        ${this.kpi('每格漲幅', r.gapMin === r.gapMax || P.mode === 'geo' ? r.gapAvg.toFixed(2) + '%' : r.gapMin.toFixed(2) + '~' + r.gapMax.toFixed(2) + '%', '', '兩條格線的價差')}
         ${this.kpi('每格淨利(扣手續費)', r.netAvg.toFixed(2) + '%', fmt.cls(r.netAvg), '≈ ' + fmt.usd(r.perCellUsd, 2) + ' USDT / 次')}
-        ${this.kpi('實際槓桿', r.effLev.toFixed(1) + 'x', r.effLev > 5 ? 'warnc' : '', '全部格子成交時 · 名目 ' + fmt.n(r.notional, 0) + ' U')}
-        ${this.kpi('估計強平價', [
-          isNaN(r.liqDown) ? '' : liqTxt('下界外', r.liqDown, P.lower),
-          isNaN(r.liqUp) ? '' : liqTxt('上界外', r.liqUp, P.upper),
-        ].filter(Boolean).join('<br>') || '—', 'liq', '最壞情況估算,通常比派網顯示高 1~3%')}
+        ${this.kpi('每格漲幅', P.mode === 'geo' || r.gapMin === r.gapMax ? r.gapAvg.toFixed(2) + '%' : r.gapMin.toFixed(2) + '~' + r.gapMax.toFixed(2) + '%', '', '兩條格線的價差')}
+        ${this.kpi('實際槓桿', r.effLev.toFixed(1) + 'x', r.effLev > 5 ? 'warnc' : '', '全部成交時 · 名目 ' + fmt.n(r.notional, 0) + ' U')}
+        ${this.kpi('總保證金', fmt.n(r.M, 0) + ' U', '', '投資額 + 額外保證金')}
       </div>
       <div class="card">
-        <div class="legend"><i class="lg lg-price"></i>價格 <i class="lg lg-lvl"></i>格線 <i class="lg lg-liq"></i>強平 <i class="lg lg-now"></i>現價</div>
-        ${Chart.svg({
-          series: [{ d: cs.map(k => k.c), cls: 'ch-price' }],
-          band: { lo: P.lower, hi: P.upper },
-          lines, h: 220,
-          x: cs.length ? [fmt.date(cs[0].t), fmt.date(cs[cs.length - 1].t)] : ['', ''],
-        })}
+        <div class="card-h"><span class="section-title in">格線 · 近 20 天 4 小時 K</span><span class="hint">按住滑動</span></div>
+        <div class="legend"><i class="lg lg-lvl"></i>格線 <i class="lg lg-edge"></i>上下限 <i class="lg lg-liq"></i>強平 <i class="lg lg-now"></i>現價</div>
+        ${src.length ? Viz.candles({ cs: src, lines, band: { lo: P.lower, hi: P.upper }, h: 260, intraday: true }) : ''}
         <details class="lv"><summary>全部 ${r.levels.length} 條格線價</summary>
           <div class="lv-grid">${r.levels.map((y, i) => `<span class="${px && y <= px ? 'below' : ''}">${i}. ${fmt.n(y, 2)}</span>`).join('')}</div>
         </details>
@@ -279,27 +465,20 @@ const App = {
       ${this.pionexHtml(P, r)}
       <div class="row-btns">
         <button class="btn" data-act="save">儲存這組</button>
-        <button class="btn primary" data-act="to-bt">去回測</button>
+        <button class="btn primary" data-act="to-bt">去回測 →</button>
       </div>
-      <p class="fine">強平價為簡化估算(逐倉、最壞情況、維持保證金率 ${Store.settings.mmr}%),實際以交易所為準。</p>`;
+      <p class="fine">強平價為簡化估算(逐倉、最壞情況、維持保證金率 ${Store.settings.mmr}%),通常比派網顯示高 1~3%,實際以派網為準。</p>`;
+    st.innerHTML = `<span class="badge h-${k.level}">${k.label}</span>
+      <span>每格 <b class="${fmt.cls(r.netAvg)}">${r.netAvg.toFixed(2)}%</b></span>
+      <span>強平 <b class="liq">${isNaN(k.liq) ? '—' : fmt.n(k.liq, 0)}</b></span>
+      <span>距離 <b>${isNaN(k.dist) ? '—' : k.dist.toFixed(1) + '%'}</b></span>`;
+    Viz.bind(out);
   },
 
-  /* 派網(Pionex)合約網格的「手動設定」欄位對照,照著填就好
-   * 建議止損:區間外 3%,但一定要留在強平價內側(離強平至少 2%),不然止損還沒觸發就先被強平 */
   pionexRows(P, r) {
     const dirT = { long: '做多', short: '做空', neutral: '中性' }[P.dir];
-    let slDown = '', slUp = '';
-    if (P.dir !== 'short') {
-      let v = P.lower * 0.97;
-      if (!isNaN(r.liqDown)) v = Math.max(v, r.liqDown * 1.02);
-      slDown = v < P.lower ? fmt.n(Grid.nice(v, P.lower), 0) : '';
-    }
-    if (P.dir !== 'long') {
-      let v = P.upper * 1.03;
-      if (!isNaN(r.liqUp)) v = Math.min(v, r.liqUp * 0.98);
-      slUp = v > P.upper ? fmt.n(Grid.nice(v, P.upper), 0) : '';
-    }
-    const sl = [slDown && `跌破 ${slDown}`, slUp && `漲破 ${slUp}`].filter(Boolean).join(' / ') || '降低槓桿後再設';
+    const s = this.stops(P, r);
+    const sl = [!isNaN(s.down) && `跌破 ${fmt.n(s.down, 0)}`, !isNaN(s.up) && `漲破 ${fmt.n(s.up, 0)}`].filter(Boolean).join(' / ') || '降低槓桿後再設';
     return [
       ['交易對', this.sym().name + '/USDT 永續'],
       ['策略', '合約網格 · ' + dirT],
@@ -313,6 +492,145 @@ const App = {
       ['止損價(建議)', sl],
     ];
   },
+
+  /* ============ 回測頁 ============ */
+  renderBacktest() {
+    const P = Store.params, root = $('#page-backtest'), b = this.bt;
+    const err = Grid.validate(P);
+    root.innerHTML = `
+      <div class="card">
+        <div class="bt-sum"><span>${err ? `<span class="warn-t">${esc(err)}</span>` :
+          `<span class="badge b-${P.dir}">${Signal.DIR_LABEL[P.dir]}</span> ${fmt.n(P.lower, 0)}~${fmt.n(P.upper, 0)} · ${P.n} 格 · ${fmt.n(P.capital, 0)}U × ${P.lev}x${+P.extra ? ' + 額外 ' + fmt.n(+P.extra, 0) + 'U' : ''}`}</span>
+          <button class="chip" data-act="to-calc">改參數</button></div>
+        <label class="lbl">回測天數</label>
+        ${this.seg('bt-days', [[7, '7 天'], [14, '14 天'], [30, '30 天'], [60, '60 天'], [90, '90 天']], b.days)}
+        <label class="lbl">K 線週期(越細越接近真實成交)</label>
+        ${this.seg('bt-tf', [['15m', '15 分'], ['1h', '1 小時'], ['4h', '4 小時']], b.tf)}
+        <button class="btn primary block big" data-act="run-bt" ${b.busy || err ? 'disabled' : ''}>${b.busy ? '回測中…' : '開始回測'}</button>
+      </div>
+      <div id="bt-out">${b.res ? this.btHtml(b.res) : '<div class="card muted-card">按「開始回測」,會用過去真實 K 線,<br>同時跑做多 / 中性 / 做空三種方向給你比較。</div>'}</div>`;
+    Viz.bind(root);
+  },
+
+  btHtml(B) {
+    const { res, cs, P } = B, r = res[P.dir], M = Grid.margin(P);
+    const dirs = [['long', '做多'], ['neutral', '中性'], ['short', '做空']];
+    const best = dirs.map(d => d[0]).sort((a, b) => res[b].ret - res[a].ret)[0];
+    const view = Viz.aggregate(cs, 120);
+    const lvStep = Math.ceil(r.levels.length / 60);
+    const lines = r.levels.filter((y, i) => i % lvStep === 0).map(y => ({ y, cls: 'ch-lvl' }));
+    lines.push({ y: P.lower, cls: 'ch-edge', label: fmt.n(P.lower, 0) }, { y: P.upper, cls: 'ch-edge', label: fmt.n(P.upper, 0) });
+    const grid = r.realized + r.fees + r.funding;
+    const intr = B.tf !== '1d';
+    return `
+      ${r.liquidated ? `<div class="warn w-bad">這組參數用「${Signal.DIR_LABEL[P.dir]}」在回測期間被強平(約第 ${r.liqIndex + 1} / ${cs.length} 根 K 線),保證金歸零。</div>` : ''}
+      <div class="card">
+        <div class="card-h"><span class="section-title in">三種方向比較 · 過去 ${B.days} 天</span><span class="hint">點一列切換</span></div>
+        ${Viz.bars(dirs.map(([d, t]) => ({
+          label: t + (d === best ? ' <span class="crown">最佳</span>' : ''), v: res[d].ret, text: fmt.pct(res[d].ret, 1),
+          sub: '回撤 ' + res[d].maxDD.toFixed(0) + '%' + (res[d].liquidated ? ' · 強平' : ''),
+          act: `data-act="bt-dir" data-v="${d}"`, cur: d === P.dir,
+        })))}
+        <p class="fine in">期間價格 ${fmt.pct(r.priceChg, 1)}。上漲段做多占優、下跌段做空占優是必然,不代表下一段也是;中性通常最穩。</p>
+      </div>
+      <div class="kpi-grid">
+        ${this.kpi('總利潤', fmt.pct(r.ret), fmt.cls(r.ret), fmt.usd(r.pnl, 2, true) + ' USDT(以投資額計)')}
+        ${this.kpi('最大回撤', r.maxDD.toFixed(1) + '%', r.maxDD > 20 ? 'liq' : '', '權益從高點回落')}
+        ${this.kpi('套利次數', r.closed + ' 次', '', '平均每天 ' + (r.closed / B.days).toFixed(1) + ' 次')}
+        ${this.kpi('價格在區間內', r.inRange.toFixed(0) + '%', r.inRange < 70 ? 'warnc' : '', '時間比例')}
+      </div>
+      <div class="card">
+        <div class="section-title in">盈虧構成(跟派網報告同一種拆法)</div>
+        ${Viz.bars([
+          { label: '網格利潤', v: grid, text: fmt.usd(grid, 2, true) },
+          { label: '手續費', v: -r.fees, text: fmt.usd(-r.fees, 2, true) },
+          { label: '資金費', v: -r.funding, text: fmt.usd(-r.funding, 2, true), sub: Store.settings.funding + '%/8h 假設' },
+          { label: '趨勢盈虧', v: r.unreal, text: fmt.usd(r.unreal, 2, true), sub: r.held + ' 格持倉 · 底倉 ' + r.baseCells + ' 格' },
+          { label: '<b>總利潤</b>', v: r.pnl, text: fmt.usd(r.pnl, 2, true), cur: true },
+        ])}
+      </div>
+      <div class="card">
+        <div class="card-h"><span class="section-title in">權益曲線</span><span class="hint">按住滑動</span></div>
+        ${Viz.line({ series: [{ d: r.eq, cls: 'ch-eq' }], lines: [{ y: M, cls: 'ch-now', label: '本金' }], h: 170,
+          yfmt: v => fmt.n(v, 0), x: [fmt.date(cs[0].t), fmt.date(cs[cs.length - 1].t)] },
+          i => `<b>${fmt.date(cs[i].t, true)}${intr ? ' ' + new Date(cs[i].t).toTimeString().slice(0, 5) : ''}</b><span>權益 ${fmt.n(r.eq[i], 2)}</span><span class="${fmt.cls(r.eq[i] - M)}">${fmt.usd(r.eq[i] - M, 2, true)} U</span><span>價格 ${fmt.price(cs[i].c)}</span>`)}
+      </div>
+      <div class="card">
+        <div class="card-h"><span class="section-title in">回測期間 K 線與格線</span><span class="hint">按住滑動</span></div>
+        ${Viz.candles({ cs: view, lines, band: { lo: P.lower, hi: P.upper }, h: 240, intraday: intr })}
+      </div>
+      <p class="fine">回測為理想化:成交價 = 格線價、無滑價、資金費率用固定假設、假設掛單都排得到隊。實盤通常會比回測差一些。</p>`;
+  },
+
+  gridCard(g, px) {
+    if (g.live) return this.liveCard(g, px);
+    const same = px && g.symbol === Store.settings.symbol;
+    const cal = Grid.calc(g, { fee: Store.settings.fee, mmr: Store.settings.mmr, price: px || g.lower });
+    return `<div class="card g-card">
+      <div class="g-head"><b>${esc(g.name)}</b><span class="badge b-${g.dir}">${Signal.DIR_LABEL[g.dir]} ${g.lev}x</span></div>
+      <div class="g-meta">${Market.SYMS[g.symbol] ? Market.SYMS[g.symbol].name : g.symbol} · 試算方案 · ${g.mode === 'geo' ? '等比' : '等差'} · ${g.n} 格 · 投資 ${fmt.n(g.capital, 0)}U${+g.extra ? ' + 額外 ' + fmt.n(+g.extra, 0) + 'U' : ''} · 每格 ${cal.netAvg.toFixed(2)}%</div>
+      ${same ? Viz.rangeBar({ lower: g.lower, upper: g.upper, price: px, liqDown: g.dir !== 'short' ? cal.liqDown : NaN, liqUp: g.dir !== 'long' ? cal.liqUp : NaN }) : ''}
+      ${g.note ? `<div class="g-note">${esc(g.note)}</div>` : ''}
+      <div class="row-btns tight">
+        <button class="btn sm" data-act="load-grid" data-id="${g.id}">試算</button>
+        <button class="btn sm" data-act="bt-grid" data-id="${g.id}">回測</button>
+        <button class="btn sm ghost" data-act="edit-grid" data-id="${g.id}">備註</button>
+        <button class="btn sm ghost danger-t" data-act="del-grid" data-id="${g.id}">刪除</button>
+      </div>
+    </div>`;
+  },
+
+  /* 健康檢查:強平距離、強平價離區間多遠、要補多少保證金
+   * 有填派網顯示的強平價就用派網的(最準),沒填才用自己的估算 */
+  liveCheck(g, px) {
+    const r = Grid.calc(g, { fee: Store.settings.fee, mmr: Store.settings.mmr, price: px, start: g.open });
+    let ld = g.dir === 'short' ? NaN : r.liqDown, lu = g.dir === 'long' ? NaN : r.liqUp;
+    if (g.pxLiq > 0) {
+      if (g.dir === 'long' || (g.dir === 'neutral' && g.pxLiq < px)) ld = g.pxLiq; else lu = g.pxLiq;
+    }
+    const k = this.risk(g.dir, ld, lu, px, g.lower, g.upper);
+    const days = this.data && this.data.atrD && !isNaN(k.dist) ? k.dist / this.data.atrD : NaN;
+    const tips = [];
+    if (k.edge < 10) tips.push(`強平價只在區間${k.side === 'up' ? '上限上方' : '下限下方'} ${k.edge.toFixed(1)}%:價格一跑出區間很快就會被強平,網格來不及「等回來」`);
+    if (k.dist < 20) tips.push(`現價離強平 ${k.dist.toFixed(1)}%${isNaN(days) ? '' : `,約 ${days.toFixed(1)} 天的日均波動`}`);
+    if (r.topUp > 0.5) tips.push(`要讓強平價離區間 10%,額外保證金約需再補 ${fmt.n(r.topUp, 0)} USDT;不想補的話,可以用較低槓桿重開`);
+    if (r.effLev > 5) tips.push(`全部格子成交時實際槓桿約 ${r.effLev.toFixed(1)}x(已算額外保證金)`);
+    if (px < g.lower || px > g.upper) tips.push('現價已經在區間外,網格停止套利,只剩趨勢盈虧在跑');
+    if (!tips.length) tips.push('強平距離充足,區間與保證金配置合理');
+    return { r, liq: k.liq, dist: k.dist, edgeGap: k.edge, days, level: k.level, label: k.label, tips, ld, lu };
+  },
+
+  liveCard(g, px) {
+    const same = g.symbol === Store.settings.symbol;
+    const h = same && px ? this.liveCheck(g, px) : null;
+    return `<div class="card g-card live-${h ? h.level : 'ok'}">
+      <div class="g-head"><b>${esc(g.name)}</b><span><span class="badge b-${g.dir}">${Signal.DIR_LABEL[g.dir]} ${g.lev}x</span>${h ? ` <span class="badge h-${h.level}">${h.label}</span>` : ''}</span></div>
+      <div class="g-meta">派網運行中 · ${g.n} 格 · 投資 ${fmt.n(g.capital, 2)}U + 額外 ${fmt.n(+g.extra || 0, 2)}U · 開單 ${fmt.n(g.open, 2)}</div>
+      ${h ? `${Viz.rangeBar({ lower: g.lower, upper: g.upper, price: px, liqDown: h.ld, liqUp: h.lu })}
+      <div class="kpi-grid mini">
+        ${this.kpi('強平價' + (g.pxLiq > 0 ? '(派網)' : '(估算)'), fmt.n(h.liq, 0), 'liq')}
+        ${this.kpi('現價距強平', isNaN(h.dist) ? '—' : h.dist.toFixed(1) + '%', h.dist < 10 ? 'liq' : h.dist < 20 ? 'warnc' : '', isNaN(h.days) ? '' : '≈ ' + h.days.toFixed(1) + ' 天日均波動')}
+      </div>
+      <ul class="reasons tips">${h.tips.map(t => `<li class="r-${h.level === 'ok' ? 'up' : 'warn'}">${esc(t)}</li>`).join('')}</ul>` :
+        `<div class="g-meta">切到 ${Market.SYMS[g.symbol] ? Market.SYMS[g.symbol].name : g.symbol} 才能做健康檢查</div>`}
+      ${g.note ? `<div class="g-note">${esc(g.note)}</div>` : ''}
+      <div class="row-btns tight">
+        <button class="btn sm" data-act="edit-live" data-id="${g.id}">更新</button>
+        <button class="btn sm" data-act="load-grid" data-id="${g.id}">試算</button>
+        <button class="btn sm" data-act="bt-grid" data-id="${g.id}">回測</button>
+        <button class="btn sm ghost danger-t" data-act="del-grid" data-id="${g.id}">刪除</button>
+      </div>
+    </div>`;
+  },
+
+  applySuggestion() {
+    const s = this.data.an.sug;
+    Object.assign(Store.params, { dir: s.dir, mode: s.mode, lower: s.lower, upper: s.upper, n: s.n, lev: s.lev });
+    Store.saveParams();
+    Toast.show('已套用建議參數');
+    this.go('calc');
+  },
+
   pionexHtml(P, r) {
     const rows = this.pionexRows(P, r);
     return `<div class="card">
@@ -329,25 +647,6 @@ const App = {
     const text = this.pionexRows(P, r).map(([k, v]) => k + ':' + v).join('\n');
     if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => Toast.show('已複製,切到派網照著填'), () => Toast.show('複製失敗,請手動抄'));
     else Toast.show('這個瀏覽器不支援複製');
-  },
-
-  /* ============ 回測頁 ============ */
-  renderBacktest() {
-    const P = Store.params, root = $('#page-backtest'), b = this.bt;
-    const err = Grid.validate(P);
-    const dirTxt = Signal.DIR_LABEL[P.dir];
-    root.innerHTML = `
-      <div class="card">
-        <div class="bt-sum"><span>${err ? `<span class="warn-t">${esc(err)}</span>` :
-          `<b>${dirTxt}</b> · ${P.mode === 'geo' ? '等比' : '等差'} · ${fmt.n(P.lower, 0)}~${fmt.n(P.upper, 0)} · ${P.n} 格 · ${fmt.n(P.capital, 0)}U × ${P.lev}x${+P.extra ? ' + 額外 ' + fmt.n(+P.extra, 0) + 'U' : ''}`}</span>
-          <button class="chip" data-act="to-calc">改參數</button></div>
-        <label class="lbl">K 線週期(越細越接近真實成交)</label>
-        ${this.seg('bt-tf', [['15m', '15 分'], ['1h', '1 小時'], ['4h', '4 小時']], b.tf)}
-        <label class="lbl">回測天數</label>
-        ${this.seg('bt-days', [[7, '7 天'], [14, '14 天'], [30, '30 天'], [60, '60 天'], [90, '90 天']], b.days)}
-        <button class="btn primary block" data-act="run-bt" ${b.busy || err ? 'disabled' : ''}>${b.busy ? '回測中…' : '開始回測'}</button>
-      </div>
-      <div id="bt-out">${b.res ? this.btHtml(b.res) : '<div class="card muted-card">設定好參數後按「開始回測」。會用過去真實 K 線,同時跑做多 / 做空 / 中性三種方向給你比較。</div>'}</div>`;
   },
 
   async runBacktest() {
@@ -373,56 +672,6 @@ const App = {
     if (this.tab === 'backtest') this.renderBacktest();
   },
 
-  btHtml(B) {
-    const { res, cs, P } = B, r = res[P.dir];
-    const dirs = [['long', '做多'], ['neutral', '中性'], ['short', '做空']];
-    const best = dirs.map(d => d[0]).sort((a, b) => res[b].ret - res[a].ret)[0];
-    const lines = r.levels.map(y => ({ y, cls: 'ch-lvl' }));
-    lines.push({ y: P.lower, cls: 'ch-edge', label: fmt.n(P.lower, 0) }, { y: P.upper, cls: 'ch-edge', label: fmt.n(P.upper, 0) });
-    const eqBase = P.capital;
-    return `
-      ${r.liquidated ? `<div class="warn w-bad">這組參數在回測期間被強平(約第 ${r.liqIndex + 1} / ${cs.length} 根 K 線),本金歸零。</div>` : ''}
-      <div class="kpi-grid">
-        ${this.kpi('總報酬(含未實現)', fmt.pct(r.ret), fmt.cls(r.ret), fmt.usd(r.pnl, 2, true) + ' USDT · 以投資額計')}
-        ${this.kpi('最大回撤', r.maxDD.toFixed(1) + '%', r.maxDD > 20 ? 'down' : '', '權益從高點回落')}
-        ${this.kpi('完成格數', r.closed + ' 次', '', `${B.days} 天 · 平均每天 ${(r.closed / B.days).toFixed(1)} 次`)}
-        ${this.kpi('價格在區間內', r.inRange.toFixed(0) + '%', r.inRange < 70 ? 'warnc' : '', '期間價格 ' + fmt.pct(r.priceChg, 1))}
-      </div>
-      <div class="card">
-        <div class="section-title in">收益拆解(${Signal.DIR_LABEL[P.dir]})</div>
-        <table class="tbl">
-          <tr><td>網格利潤(已實現價差)</td><td class="${fmt.cls(r.realized + r.fees + r.funding)}">${fmt.usd(r.realized + r.fees + r.funding, 2, true)}</td></tr>
-          <tr><td>手續費</td><td class="down">${fmt.usd(-r.fees, 2)}</td></tr>
-          <tr><td>資金費(${Store.settings.funding}%/8h 假設)</td><td class="${fmt.cls(-r.funding)}">${fmt.usd(-r.funding, 2, true)}</td></tr>
-          <tr><td>趨勢盈虧(${r.held} 格持倉中,含開單底倉 ${r.baseCells} 格)</td><td class="${fmt.cls(r.unreal)}">${fmt.usd(r.unreal, 2, true)}</td></tr>
-        </table>
-      </div>
-      <div class="section-title">三種方向比較(同一段歷史、同一組參數)</div>
-      <div class="card">
-        <table class="tbl cmp">
-          <tr><th>方向</th><th>報酬</th><th>最大回撤</th><th>格數</th><th></th></tr>
-          ${dirs.map(([d, t]) => {
-            const x = res[d];
-            return `<tr class="${d === P.dir ? 'cur' : ''}"><td>${t}${d === best ? ' <span class="crown">最佳</span>' : ''}</td>
-              <td class="${fmt.cls(x.ret)}">${fmt.pct(x.ret, 1)}</td><td>${x.maxDD.toFixed(1)}%</td><td>${x.closed}</td>
-              <td>${x.liquidated ? '<span class="down">強平</span>' : ''}</td></tr>`;
-          }).join('')}
-        </table>
-        <p class="fine in">這只代表過去這段時間。上漲段做多占優、下跌段做空占優是必然,不代表下一段也是;中性通常最穩但賺得最少。</p>
-      </div>
-      <div class="card">
-        <div class="legend"><i class="lg lg-price"></i>價格 <i class="lg lg-lvl"></i>格線</div>
-        ${Chart.svg({ series: [{ d: cs.map(k => k.c), cls: 'ch-price' }], lines, band: { lo: P.lower, hi: P.upper }, h: 210,
-          x: [fmt.date(cs[0].t), fmt.date(cs[cs.length - 1].t)] })}
-      </div>
-      <div class="card">
-        <div class="legend"><i class="lg lg-eq"></i>權益(USDT)<i class="lg lg-lvl"></i>本金</div>
-        ${Chart.svg({ series: [{ d: r.eq, cls: 'ch-eq' }], lines: [{ y: eqBase, cls: 'ch-now', label: '本金' }], h: 150,
-          yfmt: v => fmt.n(v, 0), x: [fmt.date(cs[0].t), fmt.date(cs[cs.length - 1].t)] })}
-      </div>
-      <p class="fine">回測為理想化:成交價 = 格線價、無滑價、不含真實歷史資金費率、假設掛單都排得到隊。實盤績效通常會比回測差一些。</p>`;
-  },
-
   /* ============ 我的網格 ============ */
   async renderSaved() {
     const root = $('#page-saved');
@@ -438,28 +687,6 @@ const App = {
       </div>
       <p class="fine">資料只存在這支手機的瀏覽器裡。換手機或清除瀏覽資料前,請先「匯出備份」。</p>`;
     if (!px) this.ensureData().then(() => this.tab === 'saved' && this.renderSaved());
-  },
-
-  gridCard(g, px) {
-    if (g.live) return this.liveCard(g, px);
-    const inRange = px >= g.lower && px <= g.upper;
-    const pos = px ? Math.max(0, Math.min(100, (px - g.lower) / (g.upper - g.lower) * 100)) : 0;
-    const status = !px ? '' : inRange ? `現價在區間內(${pos.toFixed(0)}%)` :
-      px < g.lower ? `現價低於下界 ${fmt.n((g.lower - px) / g.lower * 100, 1)}%` : `現價高於上界 ${fmt.n((px - g.upper) / g.upper * 100, 1)}%`;
-    const cal = Grid.calc(g, { fee: Store.settings.fee, mmr: Store.settings.mmr, price: px || g.lower });
-    return `<div class="card g-card">
-      <div class="g-head"><b>${esc(g.name)}</b><span class="badge b-${g.dir}">${Signal.DIR_LABEL[g.dir]}</span></div>
-      <div class="g-meta">${Market.SYMS[g.symbol] ? Market.SYMS[g.symbol].name : g.symbol} · ${g.mode === 'geo' ? '等比' : '等差'} · ${fmt.n(g.lower, 0)}~${fmt.n(g.upper, 0)} · ${g.n} 格 · ${fmt.n(g.capital, 0)}U × ${g.lev}x</div>
-      ${px && g.symbol === Store.settings.symbol ? `<div class="pos"><div class="pos-bar"><i style="left:${pos}%" class="${inRange ? '' : 'out'}"></i></div><div class="pos-t ${inRange ? '' : 'warnc'}">${status}</div></div>` : ''}
-      <div class="g-meta">每格淨利 ${cal.netAvg.toFixed(2)}% · 強平約 ${fmt.n(isNaN(cal.liqDown) ? cal.liqUp : cal.liqDown, 0)}</div>
-      ${g.note ? `<div class="g-note">${esc(g.note)}</div>` : ''}
-      <div class="row-btns tight">
-        <button class="btn sm" data-act="load-grid" data-id="${g.id}">試算</button>
-        <button class="btn sm" data-act="bt-grid" data-id="${g.id}">回測</button>
-        <button class="btn sm ghost" data-act="edit-grid" data-id="${g.id}">備註</button>
-        <button class="btn sm ghost danger-t" data-act="del-grid" data-id="${g.id}">刪除</button>
-      </div>
-    </div>`;
   },
 
   /* ---------- 派網機器人健康檢查 ---------- */
@@ -503,52 +730,6 @@ const App = {
         Modal.close(); this.renderSaved();
       };
     });
-  },
-
-  /* 健康檢查:強平距離、強平價離區間多遠、要補多少保證金
-   * 有填派網顯示的強平價就用派網的(最準),沒填才用自己的估算 */
-  liveCheck(g, px) {
-    const r = Grid.calc(g, { fee: Store.settings.fee, mmr: Store.settings.mmr, price: px, start: g.open });
-    const liq = g.pxLiq > 0 ? g.pxLiq : (g.dir === 'short' ? r.liqUp : r.liqDown);
-    const dist = isNaN(liq) ? NaN : g.dir === 'short' ? (liq - px) / px * 100 : (px - liq) / px * 100;
-    const edgeGap = isNaN(liq) ? NaN : g.dir === 'short' ? (liq - g.upper) / g.upper * 100 : (g.lower - liq) / g.lower * 100;
-    const atrD = this.data && this.data.atrD;
-    const days = atrD && !isNaN(dist) ? dist / atrD : NaN;
-    let level = 'ok', label = '安全';
-    if (dist < 10 || edgeGap < 3) { level = 'bad'; label = '危險'; }
-    else if (dist < 20 || edgeGap < 10) { level = 'warn'; label = '注意'; }
-    const tips = [];
-    if (edgeGap < 10) tips.push(`強平價只在區間${g.dir === 'short' ? '上限上方' : '下限下方'} ${edgeGap.toFixed(1)}%:價格一跑出區間很快就會被強平,網格來不及「等回來」`);
-    if (dist < 20) tips.push(`現價離強平 ${dist.toFixed(1)}%${isNaN(days) ? '' : `,約 ${days.toFixed(1)} 天的 ETH 日均波幅`}`);
-    if (r.topUp > 0.5) tips.push(`要讓強平價離區間 10%(約 ${fmt.n(g.dir === 'short' ? r.safeUp : r.safeDown, 0)}),額外保證金約需再補 ${fmt.n(r.topUp, 0)} USDT;不想補的話,可以用較低槓桿重開`);
-    if (r.effLev > 5) tips.push(`全部格子成交時實際槓桿約 ${r.effLev.toFixed(1)}x(已算額外保證金)`);
-    if (px < g.lower || px > g.upper) tips.push('現價已經在區間外,網格停止套利,只剩趨勢盈虧在跑');
-    if (!tips.length) tips.push('強平距離充足,區間與保證金配置合理');
-    return { r, liq, dist, edgeGap, days, level, label, tips };
-  },
-
-  liveCard(g, px) {
-    const same = g.symbol === Store.settings.symbol;
-    const h = same && px ? this.liveCheck(g, px) : null;
-    const pos = px ? Math.max(0, Math.min(100, (px - g.lower) / (g.upper - g.lower) * 100)) : 0;
-    const inRange = px >= g.lower && px <= g.upper;
-    return `<div class="card g-card live-${h ? h.level : 'ok'}">
-      <div class="g-head"><b>${esc(g.name)}</b><span><span class="badge b-${g.dir}">${Signal.DIR_LABEL[g.dir]} ${g.lev}x</span>${h ? ` <span class="badge h-${h.level}">${h.label}</span>` : ''}</span></div>
-      <div class="g-meta">派網運行中 · ${fmt.n(g.lower, 2)}~${fmt.n(g.upper, 2)} · ${g.n} 格 · 投資 ${fmt.n(g.capital, 2)}U + 額外 ${fmt.n(+g.extra || 0, 2)}U · 開單 ${fmt.n(g.open, 2)}</div>
-      ${h ? `<div class="pos"><div class="pos-bar"><i style="left:${pos}%" class="${inRange ? '' : 'out'}"></i></div></div>
-      <div class="kpi-grid mini">
-        ${this.kpi('強平價' + (g.pxLiq > 0 ? '(派網)' : '(估算)'), fmt.n(h.liq, 0), 'liq')}
-        ${this.kpi('現價距強平', h.dist.toFixed(1) + '%', h.dist < 10 ? 'liq' : h.dist < 20 ? 'warnc' : '', isNaN(h.days) ? '' : '≈ ' + h.days.toFixed(1) + ' 個日均波幅')}
-      </div>
-      <ul class="reasons tips">${h.tips.map(t => `<li class="r-${h.level === 'ok' ? 'up' : 'warn'}">${esc(t)}</li>`).join('')}</ul>` :
-        `<div class="g-meta">切到 ${Market.SYMS[g.symbol] ? Market.SYMS[g.symbol].name : g.symbol} 才能做健康檢查</div>`}
-      <div class="row-btns tight">
-        <button class="btn sm" data-act="edit-live" data-id="${g.id}">更新</button>
-        <button class="btn sm" data-act="load-grid" data-id="${g.id}">試算</button>
-        <button class="btn sm" data-act="bt-grid" data-id="${g.id}">回測</button>
-        <button class="btn sm ghost danger-t" data-act="del-grid" data-id="${g.id}">刪除</button>
-      </div>
-    </div>`;
   },
 
   openSave() {
