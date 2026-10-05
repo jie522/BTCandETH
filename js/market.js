@@ -201,11 +201,12 @@ const Ind = {
     return out;
   },
 
-  /* ADX:趨勢強度,不分多空。< 20 偏盤整,> 25 有趨勢 */
+  /* ADX:趨勢強度,不分多空。< 20 偏盤整,> 25 有趨勢
+   * pdi / mdi 是最新一筆,pdiA / mdiA 是整條序列(對齊 K 線) */
   adx(cs, p = 14) {
-    const n = cs.length, adx = new Array(n).fill(NaN);
+    const n = cs.length, adx = new Array(n).fill(NaN), pdiA = new Array(n).fill(NaN), mdiA = new Array(n).fill(NaN);
     let pdi = NaN, mdi = NaN;
-    if (n < p * 2 + 1) return { adx, pdi, mdi };
+    if (n < p * 2 + 1) return { adx, pdi, mdi, pdiA, mdiA };
     const tr = [], pd = [], md = [];
     for (let i = 1; i < n; i++) {
       const up = cs[i].h - cs[i - 1].h, dn = cs[i - 1].l - cs[i].l;
@@ -223,6 +224,7 @@ const Ind = {
         sM = sM - sM / p + md[i - 1];
       }
       pdi = 100 * sP / sTr; mdi = 100 * sM / sTr;
+      pdiA[i] = pdi; mdiA[i] = mdi;
       dx.push(pdi + mdi === 0 ? 0 : 100 * Math.abs(pdi - mdi) / (pdi + mdi));
     }
     let a = 0;
@@ -230,7 +232,7 @@ const Ind = {
     a /= p;
     adx[2 * p] = a;
     for (let i = p; i < dx.length; i++) { a = (a * (p - 1) + dx[i]) / p; adx[i + p] = a; }
-    return { adx, pdi, mdi };
+    return { adx, pdi, mdi, pdiA, mdiA };
   },
 
   /* 布林通道 + 帶寬(上軌 − 下軌)/ 中軌 */

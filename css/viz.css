@@ -244,3 +244,50 @@ input.slider:focus { outline: none; }
 .lean-chip.ln-up { background: color-mix(in srgb, var(--up) 16%, var(--card2)); color: var(--up); }
 .lean-chip.ln-down { background: color-mix(in srgb, var(--down) 16%, var(--card2)); color: var(--down); }
 .card-h + .segmented { margin: 2px 0 8px; }
+
+/* ---------- 技術面詳解(整頁) ---------- */
+.sheet.full { top: 0; max-height: none; border-radius: 0; background: var(--bg); padding: 0 12px calc(24px + env(safe-area-inset-bottom)); }
+.sheet-top { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; align-items: center; margin: 0 -12px 10px; padding: calc(10px + env(safe-area-inset-top)) 12px 10px 16px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.sheet-top h3 { margin: 0; }
+.sheet.full > .card, #tech-body > .card { margin-top: 12px; }
+.tech-more { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card2); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.tech-more span { display: flex; flex-direction: column; }
+.tech-more b { font-size: 14px; color: var(--accent); }
+.tech-more small { font-size: 11px; color: var(--muted); }
+.tech-more i { font-style: normal; font-size: 22px; color: var(--accent); }
+.tech-more:active { transform: scale(.99); }
+.tk-sum { font-size: 13px; margin: 6px 0 0; line-height: 1.6; }
+.tk-logic { font-size: 12px; color: var(--muted); margin: -4px 0 6px; line-height: 1.7; }
+.tk-logic b { color: var(--text); }
+.tk-row { display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 0; border: 0; border-top: 1px solid var(--line); background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.tk-rank { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 13px; font-weight: 800; background: var(--accent); color: var(--accent-ink); }
+.tk-rn { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tk-rn b { font-size: 14px; }
+.tk-rn small { font-size: 11px; color: var(--muted); }
+.tk-rr { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.stars { font-size: 11px; color: var(--warn); letter-spacing: 1px; }
+.st-off { color: var(--line); }
+.tk-head { display: flex; align-items: center; gap: 10px; }
+.tk-head .tk-rn { flex-direction: row; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.tk-head .tk-rn b { font-size: 16px; }
+.tk-val { font-size: 20px; font-variant-numeric: tabular-nums; }
+.tk-lean { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 8px; }
+.tk-lean .lean-chip { margin-top: 0; }
+.tk-role { font-size: 12px; color: var(--muted); }
+.ch-pdi { stroke: var(--up); stroke-width: 1.1; } .lg-pdi { background: var(--up); }
+.ch-mdi { stroke: var(--down); stroke-width: 1.1; } .lg-mdi { background: var(--down); }
+.ch-dif { stroke: var(--accent); stroke-width: 1.4; } .lg-dif { background: var(--accent); }
+.ch-dea { stroke: var(--ma50); stroke-width: 1.2; } .lg-dea { background: var(--ma50); }
+.ch-th { stroke: var(--muted); stroke-width: .7; stroke-dasharray: 3 3; opacity: .7; } .ch-th-t { fill: var(--muted); }
+.col-up { fill: var(--up); } .col-dn { fill: var(--down); } .col-flat { fill: var(--muted); opacity: .5; }
+.nodes { display: flex; gap: 2px; margin-top: 8px; }
+.nd { flex: 1; height: 14px; border-radius: 3px; background: var(--line); }
+.nd.ln-up { background: var(--up); } .nd.ln-down { background: var(--down); } .nd.ln-flat { background: color-mix(in srgb, var(--muted) 45%, var(--card2)); }
+.nd-x { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 2px; }
+.tk-trend { margin: 8px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+.tk-doc { margin-top: 8px; border-top: 1px solid var(--line); }
+.tk-doc summary { cursor: pointer; font-size: 14px; font-weight: 700; color: var(--accent); min-height: 40px; display: flex; align-items: center; }
+.tk-doc h4 { margin: 10px 0 2px; font-size: 13px; }
+.tk-doc p, .tk-doc ul { margin: 0; font-size: 13px; line-height: 1.7; }
+.tk-doc ul { padding-left: 18px; }
+.tk-trap { color: var(--warn); }

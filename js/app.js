@@ -77,12 +77,15 @@ const App = {
     else if (a === 'fill-safe') this.fillSafe();
     else if (a === 'bt-dir') { Store.params.dir = b.dataset.v; Store.saveParams(); if (this.bt.res) this.bt.res.P.dir = b.dataset.v; this.renderBacktest(); }
     else if (a === 'edit-live') this.openLive(id);
+    else if (a === 'tech') this.openTech();
+    else if (a === 'tk-jump') { const el = $('#tk-' + b.dataset.v); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   },
 
   onSeg(el) {
     const k = el.dataset.seg, v = el.dataset.v;
     const P = Store.params;
     if (k === 'tf') { this.pickTf(v); return; }
+    if (k === 'tech-tf') { this.techTf = v; this.renderTech(); return; }
     if (k === 'dir' || k === 'mode') { P[k] = v; Store.saveParams(); $$(`[data-seg="${k}"]`).forEach(x => x.classList.toggle('active', x === el)); if (this.bt.res) this.bt.res = null; this.updateCalc(); return; }
     if (k === 'bt-tf') { this.bt.tf = v; this.renderBacktest(); return; }
     if (k === 'bt-days') { this.bt.days = +v; this.renderBacktest(); return; }
@@ -333,12 +336,129 @@ const App = {
         <div class="vote-cnt"><span class="up">偏多 ${R.cnt.up}</span><span>中性 ${R.cnt.flat}</span><span class="down">偏空 ${R.cnt.down}</span></div>
         <div class="vote-v">${tn}:<b>${R.verdict}</b></div>
       </div>
-      <div class="ind-group"><span>技術面</span><small>${tn} K 線</small></div>
+      <div class="ind-group"><span>技術面</span><small>${tn} K 線 · 依重要度排序</small></div>
       ${tech.map(row).join('')}
+      <button type="button" class="tech-more" data-act="tech"><span><b>技術面詳解</b><small>重要度排名 · 每日節點走勢 · 詳細說明</small></span><i>›</i></button>
       <div class="ind-group"><span>籌碼面</span><small>${chipNote}</small></div>
       ${chip.map(row).join('')}
       <p class="fine in">反向指標(資金費率、散戶多空比)擁擠的一邊容易被洗;投票只是整理,不是預測,要搭配上面的三週期共振一起看。</p>
     </div>`;
+  },
+
+  /* ============ 技術面詳解(整頁彈出,不放主頁) ============ */
+  openTech() {
+    if (!this.data) return;
+    this.techTf = this.tf;
+    Modal.open(`<div class="sheet-top"><div><h3>技術面詳解</h3><span class="hint">${this.sym().name} · 依重要度排序 · 每日節點</span></div>
+      <button type="button" class="icon-btn" data-close="1" aria-label="關閉">✕</button></div>
+      <div id="tech-body"></div>`, null, 'full');
+    this.renderTech();
+  },
+
+  /* 每個指標的圖、數值格式、tooltip */
+  TECH_VIEW: {
+    dmi: { v: q => q.adx, f: v => v.toFixed(0), lean: q => `+DI ${q.pdi.toFixed(0)} / −DI ${q.mdi.toFixed(0)}`,
+      series: N => [{ d: N.map(q => q.adx), cls: 'ch-eq' }, { d: N.map(q => q.pdi), cls: 'ch-pdi' }, { d: N.map(q => q.mdi), cls: 'ch-mdi' }],
+      lines: [20, 35], legend: '<i class="lg lg-eq"></i>ADX <i class="lg lg-pdi"></i>+DI <i class="lg lg-mdi"></i>−DI',
+      tip: q => `<span>ADX ${q.adx.toFixed(1)}</span><span>+DI ${q.pdi.toFixed(1)} · −DI ${q.mdi.toFixed(1)}</span>` },
+    ma: { v: q => q.dev, f: v => fmt.pct(v, 1), lean: q => '離 MA200 ' + fmt.pct(q.dev, 1),
+      series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }, { d: N.map(q => q.ma50), cls: 'ch-ma50' }, { d: N.map(q => q.ma200), cls: 'ch-ma200' }],
+      lines: [], legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200',
+      tip: q => `<span>MA50 ${fmt.n(q.ma50, 0)} · MA200 ${fmt.n(q.ma200, 0)}</span><span>離 MA200 ${fmt.pct(q.dev, 1)}</span>` },
+    macd: { v: q => q.hist, f: v => (v > 0 ? '+' : '') + fmt.n(v, 2), lean: q => q.hist > 0 ? 'DIF 在 DEA 之上' : 'DIF 在 DEA 之下',
+      series: N => [{ d: N.map(q => q.dif), cls: 'ch-dif' }, { d: N.map(q => q.dea), cls: 'ch-dea' }],
+      lines: [0], legend: '<i class="lg lg-dif"></i>DIF <i class="lg lg-dea"></i>DEA(交叉 = 柱翻正 / 翻負)',
+      tip: q => `<span>DIF ${fmt.n(q.dif, 2)} · DEA ${fmt.n(q.dea, 2)}</span><span>柱 ${(q.hist > 0 ? '+' : '') + fmt.n(q.hist, 2)}</span>` },
+    rsi: { v: q => q.rsi, f: v => v.toFixed(0), lean: q => q.rsi >= 70 ? '過熱' : q.rsi <= 30 ? '超賣' : q.rsi >= 55 ? '動能偏強' : q.rsi <= 45 ? '動能偏弱' : '中性',
+      series: N => [{ d: N.map(q => q.rsi), cls: 'ch-eq' }], lines: [30, 50, 70], legend: '<i class="lg lg-eq"></i>RSI(14)',
+      tip: q => `<span>RSI ${q.rsi.toFixed(1)}</span>` },
+    pb: { v: q => q.pb, f: v => v.toFixed(0), lean: q => `帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位`,
+      series: N => [{ d: N.map(q => q.pb), cls: 'ch-eq' }], lines: [0, 50, 100], legend: '<i class="lg lg-eq"></i>%B(0 = 下軌、100 = 上軌)',
+      tip: q => `<span>%B ${q.pb.toFixed(0)}</span><span>帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位</span>` },
+    atr: { v: q => q.atrPct, f: v => v.toFixed(2) + '%', lean: () => '不參與投票',
+      series: N => [{ d: N.map(q => q.atrPct), cls: 'ch-eq' }], lines: [], legend: '<i class="lg lg-eq"></i>ATR(14)÷ 價格',
+      tip: q => `<span>ATR ${q.atrPct.toFixed(2)}%</span>` },
+  },
+
+  renderTech() {
+    const root = $('#tech-body');
+    if (!root || !this.data) return;
+    const tf = this.techTf, wk = tf === '1w', unit = wk ? '週' : '天';
+    const N = Signal.techHistory(this.data.tfs[tf].cs, tf, wk ? 26 : 30), last = N[N.length - 1];
+    const lbl = q => (wk ? '週 ' : '') + fmt.date(q.t);
+    const L = { up: '偏多', down: '偏空', flat: '中性' }, lc = l => l === 'up' ? 'up' : l === 'down' ? 'down' : '';
+    const k = Math.min(7, N.length - 1), prev = N[N.length - 1 - k];
+    const sgn = v => (v > 0 ? '+' : '') + v;
+
+    /* 每日投票淨值 */
+    const dn = last.net - prev.net;
+    const voteCard = `<div class="card">
+      <div class="card-h"><span class="section-title in">技術面每日投票</span><span class="hint">按住滑動看每${unit}</span></div>
+      ${Viz.cols({ vals: N.map(q => q.net), max: 5, x: [lbl(N[0]), lbl(last)] }, i => {
+        const q = N[i];
+        return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span><span><em class="up">偏多 ${q.cnt.up}</em> · 中性 ${q.cnt.flat} · <em class="down">偏空 ${q.cnt.down}</em></span><span>淨值 ${sgn(q.net)}</span>`;
+      })}
+      <p class="tk-sum">最新 <b class="${fmt.cls(last.net)}">${sgn(last.net)}</b>(偏多 ${last.cnt.up} · 中性 ${last.cnt.flat} · 偏空 ${last.cnt.down});
+        ${k} ${unit}前 ${sgn(prev.net)} → <b>${dn >= 2 ? '技術面轉強' : dn <= -2 ? '技術面轉弱' : '大致持平'}</b></p>
+      <p class="fine in">每${unit}一個節點,5 項技術指標各投一票(ATR 不投),淨值 = 偏多票 − 偏空票。籌碼面 Binance 只保留 30 天且粒度不同,不列入。</p>
+    </div>`;
+
+    /* 重要度排名總覽 */
+    const stars = s => '★'.repeat(s) + '<span class="st-off">' + '★'.repeat(5 - s) + '</span>';
+    const rank = `<div class="card">
+      <div class="section-title in">重要度排名(以開合約網格的角度)</div>
+      <p class="tk-logic">先問<b>能不能開</b>(ADX)→ <b>往哪開</b>(均線)→ <b>動能有沒有在轉</b>(MACD)→ <b>進場時機</b>(RSI、布林)→ <b>格子尺寸</b>(ATR)</p>
+      ${Signal.TECH.map((d, i) => {
+        const l = d.vote ? last.lean[d.key] : null, V = this.TECH_VIEW[d.key];
+        return `<button type="button" class="tk-row" data-act="tk-jump" data-v="${d.key}">
+          <i class="tk-rank">${i + 1}</i><span class="tk-rn"><b>${d.name}</b><small>${d.role}</small></span>
+          <span class="tk-rr"><span class="stars">${stars(d.stars)}</span>${l ? `<span class="lean-chip ln-${l}">${L[l]}</span>` : `<span class="lean-chip">${V.f(V.v(last))}</span>`}</span></button>`;
+      }).join('')}
+    </div>`;
+
+    /* 各指標 */
+    const cards = Signal.TECH.map((d, r) => {
+      const V = this.TECH_VIEW[d.key], vals = N.map(V.v), ok = vals.filter(v => !isNaN(v));
+      const a = V.v(prev), b = V.v(last), rng = (Math.max(...ok) - Math.min(...ok)) || 1;
+      const dir = Math.abs(b - a) < rng * 0.1 ? '持平' : b > a ? '上升' : '下降';
+      const lines = [`近 ${k} ${unit}:${V.f(a)} → <b>${V.f(b)}</b>,${dir}`];
+      let strip = '';
+      if (d.vote) {
+        const ls = N.map(q => q.lean[d.key]), cur = ls[ls.length - 1];
+        let st = 1; while (st < ls.length && ls[ls.length - 1 - st] === cur) st++;
+        let fj = -1; for (let j = ls.length - 1; j > 0; j--) if (ls[j] !== ls[j - 1]) { fj = j; break; }
+        const c7 = { up: 0, down: 0, flat: 0 }; ls.slice(-k).forEach(l => c7[l]++);
+        lines.push(`已連續 <b class="${lc(cur)}">${st} ${unit}${L[cur]}</b>${fj > 0 ? `;最近一次轉向:${lbl(N[fj])} 由${L[ls[fj - 1]]}轉${L[ls[fj]]}` : `;${N.length} ${unit}內都沒有轉向`}`);
+        lines.push(`近 ${k} ${unit}:偏多 ${c7.up} · 中性 ${c7.flat} · 偏空 ${c7.down}`);
+        strip = `${Viz.nodes(ls, N.map(q => lbl(q) + ' ' + L[q.lean[d.key]]))}
+          <div class="nd-x"><span>${lbl(N[0])}</span><span>每格 = 1 ${unit}</span><span>${lbl(last)}</span></div>`;
+      }
+      const cl = d.vote ? last.lean[d.key] : 'flat';
+      return `<div class="card tk-card" id="tk-${d.key}">
+        <div class="tk-head"><i class="tk-rank">${r + 1}</i><span class="tk-rn"><b>${d.name}</b><span class="stars">${stars(d.stars)}</span></span><b class="tk-val">${V.f(b)}</b></div>
+        <div class="tk-lean"><span class="lean-chip ln-${cl}">${d.vote ? L[cl] + ' · ' : ''}${V.lean(last)}</span><span class="tk-role">${d.role}</span></div>
+        <div class="legend">${V.legend}</div>
+        ${Viz.line({ series: V.series(N), lines: V.lines.map(y => ({ y, cls: 'ch-th', label: String(y) })), h: 150, x: [lbl(N[0]), lbl(last)],
+          yfmt: V.lines.length ? () => '' : undefined },
+          i => { const q = N[i], l = q.lean[d.key]; return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span>${V.tip(q)}${d.vote ? `<span class="${lc(l)}">${L[l]}</span>` : ''}`; })}
+        ${strip}
+        <ul class="tk-trend">${lines.map(t => `<li>${t}</li>`).join('')}</ul>
+        <details class="tk-doc"><summary>詳細說明</summary>
+          <h4>為什麼排第 ${r + 1}</h4><p>${d.why}</p>
+          <h4>它是什麼</h4><p>${d.what}</p>
+          <h4>怎麼算</h4><p>${d.calc}</p>
+          <h4>怎麼看</h4><ul>${d.read.map(t => `<li>${t}</li>`).join('')}</ul>
+          <h4>開網格怎麼用</h4><ul>${d.grid.map(t => `<li>${t}</li>`).join('')}</ul>
+          <h4>要注意</h4><p class="tk-trap">${d.trap}</p>
+        </details>
+      </div>`;
+    }).join('');
+
+    root.innerHTML = `${this.seg('tech-tf', this.TFS, tf)}
+      <p class="fine in">${wk ? '週線每個節點是一週' : tf === '8h' ? '8 小時指標,每天取當天最後收盤的一根' : '日線每根 K 線一個節點'};今天還沒收完的節點會隨行情變動。</p>
+      ${voteCard}${rank}${cards}
+      <p class="fine">指標是過去價格算出來的,只能描述現在的狀態,不能預測。排名是「對開合約網格的參考價值」,不是準確度排名。</p>`;
+    Viz.bind(root);
   },
 
   /* 籌碼面資料:8 小時看 4h 粒度,日線 / 週線看 1d 粒度(Binance 最多保留 30 天) */

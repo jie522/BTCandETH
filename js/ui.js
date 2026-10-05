@@ -57,13 +57,14 @@ const Toast = {
   },
 };
 
-/* 底部彈出的面板;內容整包換掉,不留舊的監聽器 */
+/* 底部彈出的面板;內容整包換掉,不留舊的監聽器
+ * cls = 'full' 時是整頁的詳細頁 */
 const Modal = {
-  open(html, onMount) {
+  open(html, onMount, cls = '') {
     this.close();
     const wrap = document.createElement('div');
     wrap.id = 'modal';
-    wrap.innerHTML = `<div class="sheet-bg" data-close="1"></div><div class="sheet" role="dialog">${html}</div>`;
+    wrap.innerHTML = `<div class="sheet-bg" data-close="1"></div><div class="sheet ${cls}" role="dialog">${html}</div>`;
     document.body.appendChild(wrap);
     document.body.classList.add('no-scroll');
     wrap.addEventListener('click', e => { if (e.target.closest('[data-close]')) Modal.close(); });

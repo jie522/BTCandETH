@@ -212,6 +212,29 @@ const Viz = {
     }).join('')}</div>`;
   },
 
+  /* ---------- 正負直條(每日技術面投票淨值),可滑動查看 ----------
+   * o = { vals, max, x:[左標籤, 右標籤], h },tip(i) 回傳 tooltip HTML */
+  cols(o, tip) {
+    const vals = o.vals, n = vals.length, W = this.W, H = o.h || 120, L = 4, R = 30, T = 6, B = 18;
+    const m = o.max || Math.max(1, ...vals.map(Math.abs)), cw = (W - L - R) / n;
+    const y0 = T + (H - T - B) / 2, sc = (H - T - B) / 2 / m;
+    let g = `<line class="ch-axis" x1="${L}" x2="${W - R}" y1="${y0}" y2="${y0}"/>
+      <text class="ch-t" x="${W - R + 4}" y="${T + 6}">+${m}</text><text class="ch-t" x="${W - R + 4}" y="${y0 + 3}">0</text><text class="ch-t" x="${W - R + 4}" y="${H - B}">−${m}</text>`;
+    vals.forEach((v, i) => {
+      const x = L + cw * i + cw * 0.15, w = cw * 0.7, hh = Math.max(1.5, Math.abs(v) * sc);
+      g += `<rect class="${v > 0 ? 'col-up' : v < 0 ? 'col-dn' : 'col-flat'}" x="${x.toFixed(1)}" width="${w.toFixed(1)}" y="${(v > 0 ? y0 - hh : v < 0 ? y0 : y0 - hh / 2).toFixed(1)}" height="${hh.toFixed(1)}" rx="1"/>`;
+    });
+    if (o.x) g += `<text class="ch-t" x="${L}" y="${H - 4}">${esc(o.x[0])}</text><text class="ch-t" x="${W - R}" y="${H - 4}" text-anchor="end">${esc(o.x[1])}</text>`;
+    const cid = 'c' + (++this._id);
+    this._reg[cid] = { n, x: i => (L + cw * (i + 0.5)) / W, tip };
+    return `<div class="ichart" data-cid="${cid}"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg><i class="xh"></i><div class="tip"></div></div>`;
+  },
+
+  /* 節點列:每個節點一格,顏色 = 當天偏多 / 偏空 / 中性 */
+  nodes(leans, labels) {
+    return `<div class="nodes">${leans.map((l, i) => `<i class="nd ln-${l}" title="${esc(labels[i])}"></i>`).join('')}</div>`;
+  },
+
   /* 迷你走勢(價格卡用) */
   spark(d, cls = 'sp-line') {
     if (d.length < 2) return '';

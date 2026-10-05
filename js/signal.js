@@ -86,9 +86,103 @@ const Signal = {
     return { lower, upper, n, lev: Math.floor(lev), mode: 'arith', dir };
   },
 
+  /* 單一指標的多空判斷:指標儀表與每日節點共用同一套門檻 */
+  LEAN: {
+    dmi: (pdi, mdi) => pdi - mdi > 3 ? 'up' : pdi - mdi < -3 ? 'down' : 'flat',
+    ma: (p, m50, m200) => p > m50 && m50 > m200 ? 'up' : p < m50 && m50 < m200 ? 'down' : 'flat',
+    macd: h => h > 0 ? 'up' : 'down',
+    rsi: r => r >= 55 ? 'up' : r <= 45 ? 'down' : 'flat',
+    pb: pb => pb >= 85 ? 'down' : pb <= 15 ? 'up' : 'flat',
+  },
+
+  /* 技術面重要度排序(以「開合約網格」的角度):
+   * 先問能不能開(ADX)→ 往哪開(均線)→ 動能有沒有在轉(MACD)→ 進場時機(RSI、布林)→ 格子尺寸(ATR)
+   * vote:false 的不參與指標儀表投票 */
+  TECH: [
+    { key: 'dmi', name: 'ADX 趨勢強度(DMI)', stars: 5, vote: true,
+      role: '決定「現在適不適合開網格」,比方向更優先',
+      why: '網格賺的是來回震盪,最怕單邊趨勢。ADX 直接告訴你現在是盤整還是趨勢,方向判讀也以 ADX ≥ 20 當門檻:ADX 太低時,就算其他指標偏多偏空也建議中性。',
+      what: 'ADX 只量趨勢「強不強」,不分多空;+DI 是上漲力道、−DI 是下跌力道,兩條線誰在上面就是誰占優。',
+      calc: '14 期,Wilder 平滑。DX = |+DI − −DI| ÷ (+DI + −DI) × 100,ADX 是 DX 再平滑一次。',
+      read: ['ADX < 20:趨勢弱、盤整,網格最舒服', 'ADX 20 ~ 35:有趨勢,看 +DI / −DI 哪條在上面', 'ADX > 35:強趨勢,單邊行情', 'ADX 往上走 = 趨勢在加強;從高點往下彎 = 趨勢在退燒', '+DI 與 −DI 差距 3 以內視為中性'],
+      grid: ['ADX < 20 → 開中性網格最划算', 'ADX 上穿 25 且 +DI 在上 → 做多網格;−DI 在上 → 做空網格', 'ADX > 35 → 資金縮小、槓桿降低、一定要設止損', 'ADX 從 35 以上回落 → 趨勢衰退,網格重新變得適合'],
+      trap: 'ADX 是落後指標,通常慢好幾根 K 線才反應;ADX 從高點回落不代表反轉,只代表趨勢變弱。' },
+    { key: 'ma', name: '均線排列(MA50 / MA200)', stars: 5, vote: true,
+      role: '定出長線方向,判讀分數 ±5 裡占了 ±4',
+      why: 'MA200 是市場公認的多空分界線,判讀分數裡「價格對 MA200」±2、「MA50 對 MA200」±1、「價格對 MA50」±1,方向幾乎由它決定。',
+      what: '價格、50 期均線(中期)、200 期均線(長線)三者的上下順序,以及價格離 MA200 多遠(乖離)。',
+      calc: 'MA = 最近 N 根收盤價的簡單平均。乖離 = 價格 ÷ MA200 − 1。',
+      read: ['價 > MA50 > MA200:多頭排列', '價 < MA50 < MA200:空頭排列', '其他順序:均線糾結 / 整理中', 'MA50 上穿 MA200 = 黃金交叉;下穿 = 死亡交叉', '乖離太大(日線超過 ±24%)容易往均線回歸'],
+      grid: ['多頭排列 → 做多網格,區間下限可以放在 MA50 附近', '空頭排列 → 做空網格,區間上限可以放在 MA50 附近', '糾結 → 中性網格', 'MA200 常是強支撐 / 壓力,區間邊界附近有 MA200 時價格容易在那裡反應'],
+      trap: '均線最落後,轉折後要好幾天才翻;盤整時價格在均線上下來回穿,會一直給假訊號,所以要搭配 ADX 看。' },
+    { key: 'macd', name: 'MACD 動能', stars: 4, vote: true,
+      role: '比均線早一步看到動能轉折',
+      why: 'MACD 柱體縮短通常比價格轉折早出現,適合用來判斷「趨勢還有沒有力」,補均線反應慢的缺點。',
+      what: 'DIF = 快慢兩條 EMA 的差;DEA = DIF 的平均;柱 = DIF − DEA,代表動能變化。',
+      calc: 'DIF = EMA12 − EMA26,DEA = DIF 的 9 期 EMA,柱 = DIF − DEA。',
+      read: ['柱由負翻正 = 金叉,動能轉強;由正翻負 = 死叉', '柱體連續變長 = 動能增強;連續縮短 = 動能減弱', '0 軸之上的金叉比 0 軸之下的可靠', '背離:價格創新高但 DIF 沒創新高 → 漲勢疲乏(反之亦然)'],
+      grid: ['剛金叉 + 均線多頭 → 做多網格把握度高', '柱體連續縮短 → 先別追方向,用中性網格', '死叉 + 均線空頭 → 做空網格'],
+      trap: '盤整時柱體正負來回翻,會連續出現假金叉 / 假死叉;背離可以持續很久才發生作用。' },
+    { key: 'rsi', name: 'RSI 相對強弱', stars: 3, vote: true,
+      role: '判斷進場時機:現在追會不會追在高點',
+      why: 'RSI 不太適合決定方向,但很適合決定「什麼時候開」:過熱時開做多網格,區間容易一開就全部套在高點。',
+      what: '一段時間內漲幅占漲跌總幅度的比例,0 ~ 100。',
+      calc: '14 期,Wilder 平滑:RSI = 100 − 100 ÷ (1 + 平均漲幅 ÷ 平均跌幅)。',
+      read: ['50 是多空分界;≥ 55 偏強、≤ 45 偏弱', '≥ 70 過熱,≥ 75 很熱', '≤ 30 超賣,≤ 25 很冷', '強趨勢中 RSI 可以長時間停在 70 以上(鈍化)'],
+      grid: ['想開做多網格但 RSI 過熱 → 等回落到 50 ~ 60 再開', '想開做空網格但 RSI 超賣 → 等反彈到 40 ~ 50 再開', 'RSI 在 40 ~ 60 來回 → 震盪格局,中性網格適合'],
+      trap: '超賣可以更超賣、過熱可以更過熱;只看 RSI 去抄底摸頭很危險。' },
+    { key: 'pb', name: '布林位置 %B / 帶寬', stars: 3, vote: true,
+      role: '看價格在通道的哪裡,以及波動是不是快爆發',
+      why: '%B 告訴你現價在短線區間的高低位置,帶寬告訴你波動是否被壓縮;兩者主要影響區間怎麼放、格子密不密。',
+      what: '中軌是 20 期均線,上下軌是中軌 ± 2 倍標準差。%B = 價格在上下軌之間的位置;帶寬 = 通道寬 ÷ 中軌。',
+      calc: '%B = (價格 − 下軌) ÷ (上軌 − 下軌) × 100;帶寬百分位 = 目前帶寬在最近 120 根裡的排名。',
+      read: ['%B > 100 突破上軌、< 0 跌破下軌、50 在中軌', '%B ≥ 85 貼近上軌(短線偏貴)、≤ 15 貼近下軌(短線偏便宜)', '帶寬百分位 ≤ 25 = 通道收窄,常醞釀突破', '帶寬百分位 ≥ 85 = 波動大'],
+      grid: ['網格上下限可以參考布林上下軌', '帶寬收窄時別開太窄、高槓桿的網格,突破後很快就出區間', '帶寬大時格子可以放寬,每格賺多一點', '%B 貼上軌時開做多網格,等回檔較好'],
+      trap: '強趨勢中價格會貼著上軌(或下軌)一路走,叫「騎軌」;貼上軌不代表一定會跌。' },
+    { key: 'atr', name: 'ATR 波動率', stars: 2, vote: false,
+      role: '不看方向,決定格子與區間的尺寸',
+      why: 'ATR 不分多空所以不參與投票,但網格的格距、區間寬度、強平距離「夠不夠」都靠它來衡量。',
+      what: '平均每根 K 線的真實波動幅度,這裡換算成價格的百分比。',
+      calc: '真實波幅 = max(高 − 低, |高 − 前收|, |低 − 前收|),取 14 期 Wilder 平均,再除以價格。',
+      read: ['數字越大 = 每根 K 線擺動越大', 'ATR 突然放大 = 行情變激烈,常出現在突破或急跌', 'ATR 持續縮小 = 行情變安靜'],
+      grid: ['建議參數的區間寬度是用日線 ATR 當尺', '每格間距至少要大於來回手續費,約 ATR 的 1/4 成交機會較好', '強平距離 ÷ 日線 ATR = 「幾天的日均波動」,試算頁的「約 X 天」就是這個', 'ATR 放大時降低槓桿、放寬區間'],
+      trap: 'ATR 是過去的波動,不保證未來;消息面(例如 CPI、ETF)可以讓單日波動遠超 ATR。' },
+  ],
+
+  /* 技術面每日節點:每天取一個值看趨勢
+   *   8 小時:每天最後一根 8h K(當天還沒收完就用最新一根)
+   *   日線:每根一個節點;週線:每根(每週)一個節點
+   * 回傳由舊到新 [{t, price, ma50, ma200, dev, dif, dea, hist, rsi, adx, pdi, mdi, pb, bwRank, atrPct, lean:{…}, cnt, net}] */
+  techHistory(cs, tf, count) {
+    const c = cs.map(k => k.c);
+    const ma50 = Ind.sma(c, 50), ma200 = Ind.sma(c, 200), M = Ind.macd(c), rsi = Ind.rsi(c, 14);
+    const A = Ind.adx(cs, 14), B = Ind.boll(c, 20, 2), atr = Ind.atr(cs, 14);
+    let idx = cs.map((_, i) => i), tOf = i => cs[i].t;
+    if (tf === '8h') {
+      const day = i => new Date(cs[i].t + 288e5 - 1).toDateString();     // 用收盤時間分天
+      idx = idx.filter(i => i === cs.length - 1 || day(i) !== day(i + 1));
+      tOf = i => cs[i].t + 288e5 - 1;
+    }
+    return idx.slice(-(count || 30)).map(i => {
+      const p = c[i], pb = (p - B.lo[i]) / (B.up[i] - B.lo[i]) * 100;
+      const lean = {
+        dmi: this.LEAN.dmi(A.pdiA[i], A.mdiA[i]), ma: this.LEAN.ma(p, ma50[i], ma200[i]),
+        macd: this.LEAN.macd(M.hist[i]), rsi: this.LEAN.rsi(rsi[i]), pb: this.LEAN.pb(pb),
+      };
+      const cnt = { up: 0, down: 0, flat: 0 };
+      Object.values(lean).forEach(l => cnt[l]++);
+      return {
+        t: tOf(i), price: p, ma50: ma50[i], ma200: ma200[i], dev: (p / ma200[i] - 1) * 100,
+        dif: M.dif[i], dea: M.dea[i], hist: M.hist[i], rsi: rsi[i], adx: A.adx[i], pdi: A.pdiA[i], mdi: A.mdiA[i],
+        pb, bwRank: Ind.pctRank(B.bw.slice(0, i + 1), 120), atrPct: atr[i] / p * 100,
+        lean, cnt, net: cnt.up - cnt.down,
+      };
+    });
+  },
+
   /* 指標儀表:每個指標給「偏多 / 偏空 / 中性」一票,最後統計
    *
-   * 技術面(跟著判讀週期):均線排列、MACD、RSI、DMI(+DI / −DI)、布林位置
+   * 技術面(跟著判讀週期,依 TECH 的重要度排序):DMI(ADX、+DI / −DI)、均線排列、MACD、RSI、布林位置
    * 籌碼面(Binance 合約公開資料,8 小時看 4h 粒度、日線 / 週線看 1d 粒度):
    *   資金費率、散戶多空比 —— 反向指標,擁擠的那一邊容易被洗
    *   大戶持倉多空比、主動買賣比 —— 順向指標
@@ -98,13 +192,18 @@ const Signal = {
     const c = cs.map(k => k.c), out = [];
     const devR = { '8h': 20, '1d': 40, '1w': 80 }[tf] || 40;
 
+    /* DMI */
+    out.push({ group: 'tech', label: 'ADX 趨勢強度(DMI)', v: an.adx, min: 0, max: 60, text: an.adx.toFixed(0), ticks: [20, 35],
+      lean: this.LEAN.dmi(an.pdi, an.mdi), leanText: `+DI ${an.pdi.toFixed(0)} / −DI ${an.mdi.toFixed(0)}`,
+      note: an.adx < 20 ? '趨勢弱、偏盤整 → 最適合網格(中性)' : an.adx < 35 ? '有趨勢 → 順著 DI 較強的一方做網格' : '強趨勢 → 網格容易單邊被掃,資金縮小、止損要設',
+      zones: [{ to: 20, cls: 'z-good' }, { to: 35, cls: 'z-mid' }, { to: 60, cls: 'z-warn' }] });
+
     /* 均線排列 */
     const dev = isNaN(an.ma200) ? NaN : (an.price / an.ma200 - 1) * 100;
-    let lean = 'flat', lt = '均線糾結';
-    if (an.price > an.ma50 && an.ma50 > an.ma200) { lean = 'up'; lt = '多頭排列'; }
-    else if (an.price < an.ma50 && an.ma50 < an.ma200) { lean = 'down'; lt = '空頭排列'; }
-    else if (an.price > an.ma200) lt = '長線之上、中期整理';
-    else if (an.price < an.ma200) lt = '長線之下、中期反彈';
+    const lean = this.LEAN.ma(an.price, an.ma50, an.ma200);
+    let lt = { up: '多頭排列', down: '空頭排列', flat: '均線糾結' }[lean];
+    if (lean === 'flat' && an.price > an.ma200) lt = '長線之上、中期整理';
+    else if (lean === 'flat' && an.price < an.ma200) lt = '長線之下、中期反彈';
     out.push({ group: 'tech', label: '均線(離 MA200)', v: dev, min: -devR, max: devR, text: fmt.pct(dev, 1), ticks: [0], lean, leanText: lt,
       note: isNaN(dev) ? 'K 線不足' : `價 ${fmt.n(an.price, 0)} · MA50 ${fmt.n(an.ma50, 0)} · MA200 ${fmt.n(an.ma200, 0)}${Math.abs(dev) > devR * 0.6 ? ' · 離長均線很遠,留意回歸' : ''}`,
       zones: [{ to: -devR * 0.6, cls: 'z-warn' }, { to: 0, cls: 'z-dn' }, { to: devR * 0.6, cls: 'z-up' }, { to: devR, cls: 'z-warn' }] });
@@ -118,28 +217,21 @@ const Signal = {
     else if (hn > 0) mn = hn >= hp ? '多方動能增強中' : '仍偏多,但動能在減弱';
     else mn = hn <= hp ? '空方動能增強中' : '仍偏空,但跌勢在減緩';
     out.push({ group: 'tech', label: 'MACD 柱', v: hn / hmax, min: -1, max: 1, text: (hn > 0 ? '+' : '') + fmt.n(hn, 2), ticks: [0],
-      lean: hn > 0 ? 'up' : 'down', leanText: hn > 0 ? 'DIF 在 DEA 之上' : 'DIF 在 DEA 之下', note: mn,
+      lean: this.LEAN.macd(hn), leanText: hn > 0 ? 'DIF 在 DEA 之上' : 'DIF 在 DEA 之下', note: mn,
       zones: [{ to: 0, cls: 'z-dn' }, { to: 1, cls: 'z-up' }] });
 
     /* RSI */
     const r = an.rsi;
     out.push({ group: 'tech', label: 'RSI 動能', v: r, min: 0, max: 100, text: r.toFixed(0), ticks: [30, 50, 70],
-      lean: r >= 55 ? 'up' : r <= 45 ? 'down' : 'flat', leanText: r >= 55 ? '動能偏強' : r <= 45 ? '動能偏弱' : '中性',
+      lean: this.LEAN.rsi(r), leanText: r >= 55 ? '動能偏強' : r <= 45 ? '動能偏弱' : '中性',
       note: r >= 75 ? '過熱(≥75):追多容易買在短線高點' : r <= 25 ? '超賣(≤25):追空容易賣在短線低點' : '30 以下超賣、70 以上過熱',
       zones: [{ to: 30, cls: 'z-warn' }, { to: 45, cls: 'z-dn' }, { to: 55, cls: 'z-mid' }, { to: 70, cls: 'z-up' }, { to: 100, cls: 'z-warn' }] });
-
-    /* DMI */
-    const di = an.pdi - an.mdi;
-    out.push({ group: 'tech', label: 'ADX 趨勢強度(DMI)', v: an.adx, min: 0, max: 60, text: an.adx.toFixed(0), ticks: [20, 35],
-      lean: di > 3 ? 'up' : di < -3 ? 'down' : 'flat', leanText: `+DI ${an.pdi.toFixed(0)} / −DI ${an.mdi.toFixed(0)}`,
-      note: an.adx < 20 ? '趨勢弱、偏盤整 → 最適合網格(中性)' : an.adx < 35 ? '有趨勢 → 順著 DI 較強的一方做網格' : '強趨勢 → 網格容易單邊被掃,資金縮小、止損要設',
-      zones: [{ to: 20, cls: 'z-good' }, { to: 35, cls: 'z-mid' }, { to: 60, cls: 'z-warn' }] });
 
     /* 布林位置 %B */
     const B = Ind.boll(c, 20, 2), up = Ind.last(B.up), lo = Ind.last(B.lo);
     const pb = (an.price - lo) / (up - lo) * 100;
     out.push({ group: 'tech', label: '布林位置 %B', v: pb, min: -20, max: 120, text: pb.toFixed(0), ticks: [0, 50, 100],
-      lean: pb >= 85 ? 'down' : pb <= 15 ? 'up' : 'flat', leanText: pb >= 85 ? '貼近上軌' : pb <= 15 ? '貼近下軌' : '通道中段',
+      lean: this.LEAN.pb(pb), leanText: pb >= 85 ? '貼近上軌' : pb <= 15 ? '貼近下軌' : '通道中段',
       note: (pb >= 85 ? '短線偏貴,開多網格等回檔較好;' : pb <= 15 ? '短線偏便宜,開空網格等反彈較好;' : '') + `帶寬在近期 ${isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0)} 百分位${an.bwRank <= 25 ? '(收窄,常醞釀突破)' : ''}`,
       zones: [{ to: 15, cls: 'z-up' }, { to: 85, cls: 'z-good' }, { to: 120, cls: 'z-dn' }] });
 
