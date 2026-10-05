@@ -291,3 +291,14 @@ input.slider:focus { outline: none; }
 .tk-doc p, .tk-doc ul { margin: 0; font-size: 13px; line-height: 1.7; }
 .tk-doc ul { padding-left: 18px; }
 .tk-trap { color: var(--warn); }
+
+/* ---------- 日線 / 週線操作建議 ---------- */
+.adv { border-left: 4px solid var(--accent); }
+.adv.v-long { border-left-color: var(--up); } .adv.v-short { border-left-color: var(--down); }
+.adv-dir { font-size: 22px; font-weight: 800; margin: 2px 0 6px; }
+.adv.v-long .adv-dir { color: var(--up); } .adv.v-short .adv-dir { color: var(--down); }
+.adv-sync { background: var(--card2); border-left: 4px solid var(--accent); border-radius: 12px; padding: 10px 12px; font-size: 14px; line-height: 1.6; margin-bottom: 4px; }
+.adv-sync.s-long { border-left-color: var(--up); } .adv-sync.s-short { border-left-color: var(--down); }
+.adv .tbl { margin-top: 8px; }
+.adv-watch { margin-top: 10px; font-size: 13px; }
+.adv-watch ul { margin: 4px 0 0; padding-left: 18px; line-height: 1.7; color: var(--muted); }

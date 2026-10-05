@@ -149,6 +149,74 @@ const Signal = {
       trap: 'ATR 是過去的波動,不保證未來;消息面(例如 CPI、ETF)可以讓單日波動遠超 ATR。' },
   ],
 
+  /* 日線 / 週線操作建議:用方向判讀(an)加上技術面節點(N,techHistory 的結果)寫成白話
+   * 回傳 {dir, strength, bullets:[{tone,text}], plan:[[項目,內容]], watch:[文字], note} */
+  advice(tf, an, N) {
+    const last = N[N.length - 1], k = Math.min(7, N.length - 1), prev = N[N.length - 1 - k];
+    const wk = tf === '1w', u = wk ? '週' : '天', devR = wk ? 80 : 40, L = last.lean;
+    const b = [], add = (tone, text) => b.push({ tone, text });
+    const n0 = x => fmt.n(x, 0);
+
+    const peak = Math.max(...N.slice(-10).map(q => q.adx));
+    const fall = last.adx >= 25 && last.adx <= peak - 3, rise = last.adx - prev.adx >= 3;
+    if (last.adx < 20) add('flat', `ADX ${last.adx.toFixed(0)},趨勢弱、盤整格局,網格最適合`);
+    else {
+      const side = { up: '多方占優', down: '空方占優', flat: '多空接近' }[L.dmi];
+      add(L.dmi === 'flat' ? 'flat' : L.dmi, `ADX ${last.adx.toFixed(0)},${side}(+DI ${last.pdi.toFixed(0)} / −DI ${last.mdi.toFixed(0)})${fall ? ',已從高點回落,趨勢在退燒' : rise ? ',且還在加強' : ''}`);
+    }
+    if (last.adx >= 35) add('warn', '強趨勢中,網格容易單邊被掃,資金縮小、止損要設');
+
+    if (L.ma === 'up') add('up', `價格 > MA50(${n0(last.ma50)})> MA200(${n0(last.ma200)}),多頭排列`);
+    else if (L.ma === 'down') add('down', `價格 < MA50(${n0(last.ma50)})< MA200(${n0(last.ma200)}),空頭排列`);
+    else add('flat', `均線糾結:價格在 MA200(${n0(last.ma200)})${last.price > last.ma200 ? '之上' : '之下'},中期方向未定`);
+
+    const flip = N.slice(-4).some(q => q.lean.macd !== L.macd);
+    add(L.macd, flip ? (L.macd === 'up' ? 'MACD 剛金叉,動能轉強' : 'MACD 剛死叉,動能轉弱')
+      : (L.macd === 'up' ? 'MACD 柱在 0 軸之上,多方動能' : 'MACD 柱在 0 軸之下,空方動能') + (Math.abs(last.hist) < Math.abs(prev.hist) ? `,但近 ${k} ${u}柱體縮短、動能減弱` : `,近 ${k} ${u}柱體擴大、動能增強`));
+
+    if (last.rsi >= 70) add('warn', `RSI ${last.rsi.toFixed(0)} 過熱,追多容易買在高點`);
+    else if (last.rsi <= 30) add('warn', `RSI ${last.rsi.toFixed(0)} 超賣,追空容易賣在低點`);
+    else add(L.rsi, `RSI ${last.rsi.toFixed(0)},動能${L.rsi === 'up' ? '偏強' : L.rsi === 'down' ? '偏弱' : '中性'}`);
+    if (last.pb >= 85) add('warn', `%B ${last.pb.toFixed(0)},貼近布林上軌,短線偏貴`);
+    else if (last.pb <= 15) add('warn', `%B ${last.pb.toFixed(0)},貼近布林下軌,短線偏便宜`);
+    if (!isNaN(last.bwRank) && last.bwRank <= 25) add('warn', `布林帶寬只有近期 ${last.bwRank.toFixed(0)} 百分位,收窄後常有突破`);
+    if (Math.abs(last.dev) > devR * 0.6) add('warn', `離 MA200 ${fmt.pct(last.dev, 1)},離長均線很遠,留意回歸`);
+
+    const dir = an.dir, plan = [], watch = [];
+    const counter = dir === 'long' ? (L.macd === 'down') + (last.rsi >= 70) + (last.pb >= 85) + (last.dev > devR * 0.6)
+      : dir === 'short' ? (L.macd === 'up') + (last.rsi <= 30) + (last.pb <= 15) + (last.dev < -devR * 0.6) : 0;
+    const hi = Math.max(...N.map(q => q.price)), lo = Math.min(...N.map(q => q.price));
+    const lvls = [{ n: 'MA50', v: last.ma50 }, { n: 'MA200', v: last.ma200 }].filter(x => !isNaN(x.v));
+    if (dir === 'long') {
+      plan.push(['建議方向', counter >= 2 ? '做多網格,但先等回檔再開,或資金縮小' : '做多網格']);
+      plan.push(['風險等級', counter >= 2 || last.adx >= 35 ? '低風險(槓桿 ≤ 3x)' : '中風險(槓桿 ≤ 5x)']);
+      const sup = lvls.filter(x => x.v < last.price).sort((a, c) => c.v - a.v), s1 = sup[0], s2 = sup[sup.length - 1];
+      plan.push(['區間參考', s1 ? `下限放最近的支撐 ${s1.n} ${n0(s1.v)} 附近(回檔買得到)${s2 !== s1 ? `,最多不低於 ${s2.n} ${n0(s2.v)}` : ''}` : `價格在兩條均線之下,下限參考近期低點 ${n0(lo)}`]);
+      plan.push(['止損參考', s2 ? `收盤跌破 ${s2.n}(${n0(s2.v)}),或跌破最近支撐且 MACD 死叉` : `收盤跌破近期低點 ${n0(lo)}`]);
+      watch.push('MACD 死叉(柱體翻負)', s1 ? `收盤跌破 ${s1.n}(${n0(s1.v)})` : `收盤再創近期新低`, 'ADX 從高點回落且 −DI 上穿 +DI');
+      if (last.rsi >= 70) watch.push('RSI 回落到 60 以下再進場較安全');
+    } else if (dir === 'short') {
+      plan.push(['建議方向', counter >= 2 ? '做空網格,但先等反彈再開,或資金縮小' : '做空網格']);
+      plan.push(['風險等級', counter >= 2 || last.adx >= 35 ? '低風險(槓桿 ≤ 3x)' : '中風險(槓桿 ≤ 5x)']);
+      const res = lvls.filter(x => x.v > last.price).sort((a, c) => a.v - c.v), r1 = res[0], r2 = res[res.length - 1];
+      plan.push(['區間參考', r1 ? `上限放最近的壓力 ${r1.n} ${n0(r1.v)} 附近(反彈空得到)${r2 !== r1 ? `,最多不高於 ${r2.n} ${n0(r2.v)}` : ''}` : `價格在兩條均線之上,上限參考近期高點 ${n0(hi)}`]);
+      plan.push(['止損參考', r2 ? `收盤站上 ${r2.n}(${n0(r2.v)}),或站上最近壓力且 MACD 金叉` : `收盤站上近期高點 ${n0(hi)}`]);
+      watch.push('MACD 金叉(柱體翻正)', r1 ? `收盤站上 ${r1.n}(${n0(r1.v)})` : `收盤再創近期新高`, 'ADX 從高點回落且 +DI 上穿 −DI');
+      if (last.rsi <= 30) watch.push('RSI 反彈到 40 以上再進場較安全');
+    } else {
+      plan.push(['建議方向', last.adx < 20 ? '中性網格(盤整、趨勢弱)' : '中性網格,或觀望(訊號分歧、方向不明確)']);
+      plan.push(['風險等級', '低 ~ 中風險(槓桿 ≤ 3 ~ 5x)']);
+      plan.push(['區間參考', `近 ${N.length} ${u}高低 ${n0(lo)} ~ ${n0(hi)} 當外框,中間再依布林上下軌收窄`]);
+      plan.push(['止損參考', '收盤突破或跌破區間 3% 以上,就停損並重新評估']);
+      watch.push('ADX 上穿 25:趨勢出現,改順勢方向', '收盤突破區間:網格出場');
+      if (!isNaN(last.bwRank) && last.bwRank <= 25) watch.push('帶寬收窄:突破隨時可能發生');
+    }
+
+    const note = wk ? '週線一週才一個節點、變化慢:拿來定大方向與風險等級,進場時機請搭配日線 / 8 小時。'
+      : '日線用來抓進場時機與調整區間;大方向以週線為準,兩者不同調時資金放小。';
+    return { dir, strength: an.strength, score: an.score, bullets: b, plan, watch, note };
+  },
+
   /* 技術面每日節點:每天取一個值看趨勢
    *   8 小時:每天最後一根 8h K(當天還沒收完就用最新一根)
    *   日線:每根一個節點;週線:每根(每週)一個節點

@@ -454,7 +454,30 @@ const App = {
       </div>`;
     }).join('');
 
-    root.innerHTML = `${this.seg('tech-tf', this.TFS, tf)}
+    /* 日線 / 週線操作建議(不跟著下面的週期切換) */
+    const T = this.data.tfs, advOf = t => {
+      const cs = T[t].cs, A = Signal.advice(t, T[t].an, Signal.techHistory(cs, t, t === '1w' ? 26 : 30));
+      return Object.assign(A, { tn: this.tfName(t) });
+    };
+    const aD = advOf('1d'), aW = advOf('1w');
+    let sync;
+    if (aD.dir !== 'neutral' && aD.dir === aW.dir) sync = { cls: aD.dir, text: `日線與週線同向(${Signal.DIR_LABEL[aD.dir]}),方向把握度較高。` };
+    else if (aD.dir !== 'neutral' && aW.dir !== 'neutral') sync = { cls: 'neutral', text: '日線與週線方向相反:短線逆著長線,資金放小,或先用中性網格。' };
+    else if (aW.dir !== 'neutral') sync = { cls: aW.dir, text: `週線${Signal.DIR_LABEL[aW.dir]}、日線方向不明:等日線回穩再順著週線方向進場,或先用中性網格。` };
+    else if (aD.dir !== 'neutral') sync = { cls: 'neutral', text: `日線${Signal.DIR_LABEL[aD.dir]}、週線方向不明:屬短線機會,槓桿與資金放小。` };
+    else sync = { cls: 'neutral', text: '日線與週線都沒有明確方向:中性網格較穩,資金與槓桿放小。' };
+    const advCard = A => `<div class="card adv v-${A.dir}">
+      <div class="v-head"><span class="v-tf">${A.tn}建議</span><span class="v-conf">把握度 ${A.strength} · 分數 ${sgn(A.score)}</span></div>
+      <div class="adv-dir">${Signal.DIR_LABEL[A.dir]}</div>
+      <ul class="reasons">${A.bullets.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul>
+      <table class="tbl">${A.plan.map(([a, v]) => `<tr><td>${a}</td><td><b>${esc(v)}</b></td></tr>`).join('')}</table>
+      <div class="adv-watch"><b>轉弱 / 改看法的訊號</b><ul>${A.watch.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+      <p class="fine in">${A.note}</p></div>`;
+    const advHtml = `<div class="section-title">日線 · 週線操作建議</div>
+      <div class="adv-sync s-${sync.cls}">${sync.text}</div>${advCard(aD)}${advCard(aW)}
+      <div class="section-title">指標走勢與節點(切換週期)</div>`;
+
+    root.innerHTML = `${advHtml}${this.seg('tech-tf', this.TFS, tf)}
       <p class="fine in">${wk ? '週線每個節點是一週' : tf === '8h' ? '8 小時指標,每天取當天最後收盤的一根' : '日線每根 K 線一個節點'};今天還沒收完的節點會隨行情變動。</p>
       ${voteCard}${rank}${cards}
       <p class="fine">指標是過去價格算出來的,只能描述現在的狀態,不能預測。排名是「對開合約網格的參考價值」,不是準確度排名。</p>`;
