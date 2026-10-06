@@ -228,7 +228,7 @@ input.slider:focus { outline: none; }
 .tier-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; line-height: 1.6; }
 
 /* 指標儀表:投票與偏多 / 偏空小標 */
-.ind-card .segmented { margin: 4px 0 12px; }
+.ind-card .segmented, .chip-card .segmented { margin: 4px 0 12px; }
 .vote { background: var(--card2); border-radius: 12px; padding: 10px 12px; margin-bottom: 6px; border-left: 4px solid var(--accent); }
 .vote.v-long { border-left-color: var(--up); } .vote.v-short { border-left-color: var(--down); }
 .vote-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
@@ -331,3 +331,11 @@ input.slider:focus { outline: none; }
 .nv-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .od-l em.sig { background: var(--card2); color: var(--muted); border: 1px solid var(--line); }
 .od-warn { font-size: 12px; color: var(--warn); margin: 6px 0 4px; line-height: 1.6; }
+
+/* ---------- 籌碼面指標說明 ---------- */
+.chip-doc { border-top: 1px solid var(--line); margin-top: 0; }
+.chip-doc summary { display: flex; align-items: center; gap: 10px; min-height: 52px; font-weight: 400; color: var(--text); list-style: none; }
+.chip-doc summary::-webkit-details-marker { display: none; }
+.chip-doc summary .tk-rn { flex: 1; min-width: 0; }
+.chip-doc .tk-test { margin: 0 0 8px; }
+.tabbar .tab span:last-child { white-space: nowrap; }

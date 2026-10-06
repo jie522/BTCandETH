@@ -457,8 +457,8 @@ const Signal = {
    *   資金費率、散戶多空比 —— 反向指標,擁擠的那一邊容易被洗
    *   大戶持倉多空比、主動買賣比 —— 順向指標
    *   持倉量變化 —— 要搭配價格方向解讀
-   * 回傳 {items:[{group, label, v, min, max, text, zones, ticks, lean, leanText, note}], cnt, net, verdict, vdir} */
-  meters(an, cs, sent, funding, tf) {
+   * 回傳 {items:[{key, group, vote, label, v, min, max, text, zones, ticks, lean, leanText, note}]};投票統計用 tally(items) */
+  meters(an, cs, sent, funding, tf, ext) {
     const c = cs.map(k => k.c), out = [];
     const devR = { '8h': 20, '1d': 40, '1w': 80 }[tf] || 40;
 
@@ -512,33 +512,40 @@ const Signal = {
       note: (pb >= 85 || pb <= 15 ? '實測貼軌後多半延續,不是反轉訊號;' : '') + `帶寬在近期 ${isNaN(an.bwRank) ? '—' : an.bwRank.toFixed(0)} 百分位${an.bwRank <= 25 ? '(收窄,常醞釀突破)' : ''}`,
       zones: [{ to: 15, cls: 'z-dn' }, { to: 85, cls: 'z-good' }, { to: 120, cls: 'z-up' }] });
 
-    /* 技術面依 TECH 的重要度排序 */
-    const rank = k => this.TECH.findIndex(d => d.key === k);
-    out.sort((a, b) => rank(a.key) - rank(b.key));
 
-    /* ---- 籌碼面 ---- */
-    out.push({ group: 'chip', label: '資金費率 /8h', v: funding, min: -0.05, max: 0.1, text: funding.toFixed(4) + '%', ticks: [0, 0.03],
-      lean: funding >= 0.03 ? 'down' : funding <= -0.01 ? 'up' : 'flat',
-      leanText: funding >= 0.03 ? '多方擁擠(反向)' : funding <= -0.01 ? '空方擁擠(反向)' : '正常',
-      note: '正值 = 多方付費給空方;太高代表做多的人太多,容易多殺多',
+    /* ---- 籌碼面(依 CHIP 的實測順序) ---- */
+    const NV = '僅 30 天資料,無法回放驗證';
+    const fh = ext && ext.fundDaily && ext.fundDaily.length > 30 ? ext.fundDaily : null;
+    const frank = fh ? fh.filter(x => x <= fh[fh.length - 1]).length / fh.length * 100 : NaN;
+    out.push({ key: 'fund', group: 'chip', label: '資金費率 /8h', v: funding, min: -0.05, max: 0.1, text: funding.toFixed(4) + '%', ticks: [0, 0.03],
+      lean: frank >= 90 ? 'up' : 'flat',
+      leanText: (isNaN(frank) ? '' : `近 ${fh.length} 天排名 ${frank.toFixed(0)}`) + (funding >= 0.03 ? ' · 偏高' : funding <= -0.01 ? ' · 為負' : ''),
+      note: frank >= 90 ? '費率在近期高檔:實測是順勢(多方強)而不是反轉訊號' : funding >= 0.03 ? '費率很高:實測中性網格最容易被打出區間,持倉成本也高' : '正值 = 多方付費給空方;一般水準',
       zones: [{ to: -0.01, cls: 'z-warn' }, { to: 0.03, cls: 'z-good' }, { to: 0.1, cls: 'z-warn' }] });
+    if (ext && ext.fng && ext.fng.length) {
+      const g = ext.fng[0], gl = g >= 75 ? '極度貪婪' : g >= 55 ? '貪婪' : g >= 45 ? '中性' : g >= 25 ? '恐懼' : '極度恐懼';
+      out.push({ key: 'fng', vote: false, group: 'chip', label: '恐懼貪婪指數', v: g, min: 0, max: 100, text: String(g), ticks: [25, 50, 75],
+        lean: 'flat', leanText: gl + (ext.fng.length > 1 ? ` · 昨天 ${ext.fng[1]}` : ''),
+        note: g >= 75 ? '極度貪婪:實測中性網格最脆弱(ETH 只有 33% 沒被打出區間)' : g <= 25 ? '極度恐懼:實測不是抄底訊號(之後 14 天平均報酬約 0)' : '0 ~ 100,50 為中性',
+        zones: [{ to: 25, cls: 'z-warn' }, { to: 75, cls: 'z-mid' }, { to: 100, cls: 'z-warn' }] });
+    }
+    if (ext && !isNaN(ext.prem)) {
+      out.push({ key: 'prem', vote: false, group: 'chip', label: '期現溢價(基差)', v: ext.prem, min: -0.2, max: 0.2, text: fmt.pct(ext.prem, 3), ticks: [0],
+        lean: ext.prem > 0.02 ? 'up' : ext.prem < -0.02 ? 'down' : 'flat', leanText: ext.prem > 0.02 ? '永續比現貨貴(多方積極)' : ext.prem < -0.02 ? '永續比現貨便宜(空方積極)' : '接近現貨',
+        note: '永續價格相對現貨的溢價;實測為弱順勢(溢價為正之後較容易上漲)',
+        zones: [{ to: -0.02, cls: 'z-dn' }, { to: 0.02, cls: 'z-mid' }, { to: 0.2, cls: 'z-up' }] });
+    }
     if (sent) {
       const span = sent.period === '4h' ? '近 5 天' : '近 30 天';
       const ls = Ind.last(sent.ls), lsAvg = sent.ls.reduce((a, b) => a + b, 0) / sent.ls.length;
-      out.push({ group: 'chip', label: '散戶多空比(帳戶數)', v: ls, min: 0.5, max: 4, text: ls.toFixed(2), ticks: [1, 2.5],
-        lean: ls >= 2.5 ? 'down' : ls <= 1 ? 'up' : 'flat', leanText: ls >= 2.5 ? '散戶大量做多(反向)' : ls <= 1 ? '散戶偏空(反向)' : '正常',
-        note: `${span}平均 ${lsAvg.toFixed(2)};散戶一面倒時,市場常往反方向走`,
-        zones: [{ to: 1, cls: 'z-up' }, { to: 2.5, cls: 'z-mid' }, { to: 4, cls: 'z-dn' }] });
-      const tp = Ind.last(sent.top);
-      out.push({ group: 'chip', label: '大戶多空比(持倉量)', v: tp, min: 0.5, max: 2.5, text: tp.toFixed(2), ticks: [0.9, 1.3],
-        lean: tp >= 1.3 ? 'up' : tp <= 0.9 ? 'down' : 'flat', leanText: tp >= 1.3 ? '大戶偏多' : tp <= 0.9 ? '大戶偏空' : '大戶中性',
-        note: '前 20% 大戶的多單 ÷ 空單部位,順著大戶方向比較安全',
+      out.push({ key: 'top', vote: false, group: 'chip', label: '大戶多空比(持倉量)', v: Ind.last(sent.top), min: 0.5, max: 2.5, text: Ind.last(sent.top).toFixed(2), ticks: [0.9, 1.3],
+        lean: Ind.last(sent.top) >= 1.3 ? 'up' : Ind.last(sent.top) <= 0.9 ? 'down' : 'flat', leanText: (Ind.last(sent.top) >= 1.3 ? '大戶偏多' : Ind.last(sent.top) <= 0.9 ? '大戶偏空' : '大戶中性') + ' · ' + NV,
+        note: '前 20% 大戶的多單 ÷ 空單部位;只能參考',
         zones: [{ to: 0.9, cls: 'z-dn' }, { to: 1.3, cls: 'z-mid' }, { to: 2.5, cls: 'z-up' }] });
-      const tk6 = sent.taker.slice(-6), tkr = tk6.reduce((a, b) => a + b, 0) / tk6.length;
-      out.push({ group: 'chip', label: '主動買賣比', v: tkr, min: 0.8, max: 1.2, text: tkr.toFixed(3), ticks: [0.95, 1, 1.05],
-        lean: tkr >= 1.05 ? 'up' : tkr <= 0.95 ? 'down' : 'flat', leanText: tkr >= 1.05 ? '買方較積極' : tkr <= 0.95 ? '賣方較積極' : '買賣均衡',
-        note: `最近 6 期的主動買入量 ÷ 主動賣出量(每期 ${sent.period === '4h' ? '4 小時' : '1 天'})`,
-        zones: [{ to: 0.95, cls: 'z-dn' }, { to: 1.05, cls: 'z-mid' }, { to: 1.2, cls: 'z-up' }] });
+      out.push({ key: 'ls', vote: false, group: 'chip', label: '散戶多空比(帳戶數)', v: ls, min: 0.5, max: 4, text: ls.toFixed(2), ticks: [1, 2.5],
+        lean: ls >= 2.5 ? 'down' : ls <= 1 ? 'up' : 'flat', leanText: (ls >= 2.5 ? '散戶大量做多' : ls <= 1 ? '散戶偏空' : '正常') + ' · ' + NV,
+        note: `${span}平均 ${lsAvg.toFixed(2)};傳統當反向指標,但資料太短沒驗證過`,
+        zones: [{ to: 1, cls: 'z-up' }, { to: 2.5, cls: 'z-mid' }, { to: 4, cls: 'z-dn' }] });
       const o0 = sent.oi[0], o1 = Ind.last(sent.oi);
       const oiChg = (o1.q / o0.q - 1) * 100, pxChg = (o1.v / o1.q) / (o0.v / o0.q) * 100 - 100;
       let ol = 'flat', ot;
@@ -547,22 +554,84 @@ const Signal = {
       else if (oiChg < -2 && pxChg > 0) ot = '價漲、持倉減:多半是空單回補,上漲力道較弱';
       else if (oiChg < -2) ot = '價跌、持倉減:多單停損 / 平倉,賣壓可能接近尾聲';
       else ot = '持倉變化不大';
-      out.push({ group: 'chip', label: `持倉量變化(${span})`, v: oiChg, min: -20, max: 20, text: fmt.pct(oiChg, 1), ticks: [0],
-        lean: ol, leanText: `同期價格 ${fmt.pct(pxChg, 1)}`, note: ot,
+      out.push({ key: 'oi', vote: false, group: 'chip', label: `持倉量變化(${span})`, v: oiChg, min: -20, max: 20, text: fmt.pct(oiChg, 1), ticks: [0],
+        lean: ol, leanText: `同期價格 ${fmt.pct(pxChg, 1)} · ${NV}`, note: ot,
         zones: [{ to: -2, cls: 'z-mid' }, { to: 2, cls: 'z-good' }, { to: 20, cls: 'z-mid' }] });
+      const tk6 = sent.taker.slice(-6), tkr = tk6.reduce((a, b) => a + b, 0) / tk6.length;
+      out.push({ key: 'taker', vote: false, group: 'chip', label: '主動買賣比', v: tkr, min: 0.8, max: 1.2, text: tkr.toFixed(3), ticks: [0.95, 1, 1.05],
+        lean: tkr >= 1.05 ? 'up' : tkr <= 0.95 ? 'down' : 'flat', leanText: (tkr >= 1.05 ? '買方較積極' : tkr <= 0.95 ? '賣方較積極' : '買賣均衡') + ' · ' + NV,
+        note: `最近 6 期的主動買入量 ÷ 主動賣出量(每期 ${sent.period === '4h' ? '4 小時' : '1 天'})`,
+        zones: [{ to: 0.95, cls: 'z-dn' }, { to: 1.05, cls: 'z-mid' }, { to: 1.2, cls: 'z-up' }] });
     }
 
-    const cnt = { up: 0, down: 0, flat: 0 };
-    out.forEach(m => { if (m.vote !== false) cnt[m.lean]++; });
-    const net = cnt.up - cnt.down;
-    let verdict, vdir = 'neutral';
-    if (net >= 3) { vdir = 'long'; verdict = '指標面偏多 → 做多網格較有利'; }
-    else if (net <= -3) { vdir = 'short'; verdict = '指標面偏空 → 做空網格較有利'; }
-    else if (net > 0) verdict = '略偏多但不一致 → 中性網格,或做多但資金放小';
-    else if (net < 0) verdict = '略偏空但不一致 → 中性網格,或做空但資金放小';
-    else verdict = '多空打平 → 中性網格最適合';
-    return { items: out, cnt, net, verdict, vdir };
+    /* 技術面、籌碼面各自依實測順序排列 */
+    const rank = k => { const a = this.TECH.findIndex(d => d.key === k); return a >= 0 ? a : 100 + this.CHIP.findIndex(d => d.key === k); };
+    out.sort((a, b) => rank(a.key) - rank(b.key));
+    return { items: out, ext };
   },
+
+  /* 一組指標的投票統計(只算 vote !== false 的) */
+  tally(items, name) {
+    const cnt = { up: 0, down: 0, flat: 0 };
+    items.forEach(m => { if (m.vote !== false) cnt[m.lean]++; });
+    const net = cnt.up - cnt.down, n = cnt.up + cnt.down + cnt.flat;
+    let verdict, vdir = 'neutral';
+    if (net >= 3) { vdir = 'long'; verdict = `${name}偏多 → 做多網格較有利`; }
+    else if (net <= -3) { vdir = 'short'; verdict = `${name}偏空 → 做空網格較有利`; }
+    else if (net > 0) verdict = `略偏多但不一致 → 中性網格,或做多但資金放小`;
+    else if (net < 0) verdict = `略偏空但不一致 → 中性網格,或做空但資金放小`;
+    else verdict = '多空打平 → 中性網格最適合';
+    return { cnt, net, n, verdict, vdir };
+  },
+
+  /* 籌碼面對網格的提醒:只放有 5 年實測依據的(資金費率、恐懼貪婪、期現溢價) */
+  chipFlags(funding, ext) {
+    const f = [];
+    const fh = ext && ext.fundDaily && ext.fundDaily.length > 30 ? ext.fundDaily : null;
+    const frank = fh ? fh.filter(x => x <= fh[fh.length - 1]).length / fh.length * 100 : NaN;
+    if (funding >= 0.03) f.push({ tone: 'warn', text: `資金費率 ${funding.toFixed(3)}% 很高:歷史上這種時候開中性網格,14 天內被打出區間的機率 63 ~ 68%(平均約 48%);持倉成本也高,資金放小。` });
+    else if (funding <= -0.01) f.push({ tone: 'warn', text: `資金費率 ${funding.toFixed(3)}% 為負:ETH 這種時候之後 14 天平均 −3.8%(樣本只有 32 天),做多網格要小心。` });
+    if (frank >= 90) f.push({ tone: 'up', text: `資金費率在近 ${fh.length} 天的高檔(排名 ${frank.toFixed(0)}):歷史上之後 14 天上漲機率約 58%、做多網格被跌破的機率最低(約 9%),屬順勢訊號,不是「擁擠要跌」。` });
+    if (ext && ext.fng && ext.fng[0] >= 75) f.push({ tone: 'warn', text: `恐懼貪婪 ${ext.fng[0]}(極度貪婪):歷史上這種時候開中性網格只有 33%(ETH)~ 48%(BTC)沒被打出區間,明顯比平均脆弱,偏好順勢或縮小資金。` });
+    if (ext && ext.fng && ext.fng[0] <= 25) f.push({ tone: 'flat', text: `恐懼貪婪 ${ext.fng[0]}(極度恐懼):歷史上之後 14 天平均報酬約 0,不是抄底訊號;做空網格被往上打穿的機率最低(約 7 ~ 12%)。` });
+    if (!f.length) f.push({ tone: 'flat', text: '資金費率、恐懼貪婪都在正常範圍,籌碼面沒有特別需要避開的訊號。' });
+    return f;
+  },
+
+  /* 籌碼面指標實測排序(Binance 公開資料;只有前三項有完整歷史可回測) */
+  CHIP: [
+    { key: 'fund', name: '資金費率', stars: 4, vote: true,
+      role: '多空擁擠程度;實測是順勢,不是反轉',
+      read: ['正值 = 多方付費給空方,每 8 小時結算一次', '看它在近期的排名比看絕對值有用', '≥ 0.03% 偏高、≤ −0.01% 為負'],
+      grid: ['費率排名在高檔:偏順勢(做多網格被跌破的機率最低),不要因為「太擁擠」就做空', '費率 ≥ 0.03%:避免開中性網格;持倉成本變高,資金放小'],
+      test: '近 90 天排名 ≥ 90 後 14 天上漲機率 58%、平均 ETH +3.0% / BTC +2.1%;費率 ≥ 0.03% 時中性網格沒被打出區間的比例只有 32%(ETH)/ 37%(BTC),平均約 53%。教科書的「費率高 = 多殺多要跌」沒有成立。' },
+    { key: 'fng', name: '恐懼貪婪指數', stars: 3, vote: false,
+      role: '市場情緒;極度貪婪時網格最脆弱',
+      read: ['0 ~ 100:< 25 極度恐懼、25 ~ 45 恐懼、45 ~ 55 中性、55 ~ 75 貪婪、≥ 75 極度貪婪', '每天更新一次(alternative.me)'],
+      grid: ['≥ 75 時不要開中性網格,改順勢或縮小資金', '極度恐懼不等於底部,不要只因為恐懼就抄底'],
+      test: '≥ 75 時中性網格沒被打出區間 ETH 33% / BTC 48%(平均約 53%);< 25 時之後 14 天平均報酬 ETH 0.0% / BTC −0.4%,沒有反轉效果。' },
+    { key: 'prem', name: '期現溢價(基差)', stars: 2, vote: false,
+      role: '永續合約相對現貨的溢價',
+      read: ['溢價為正 = 永續比現貨貴,多方比較積極', '幣圈常態在 ±0.1% 內,數字很小'],
+      grid: ['只當順勢的弱輔助:溢價為正時偏多一點點', '溢價很大時通常伴隨高資金費率,一起看'],
+      test: '溢價為正之後 14 天平均 ETH +2.5 ~ +3.0% / BTC +1.4 ~ +1.8%,溢價為負 ETH +0.4 ~ +0.8% / BTC +0.8 ~ +1.3%;差距小,只當弱訊號。' },
+    { key: 'top', name: '大戶多空比(持倉量)', stars: 1, vote: false,
+      role: '前 20% 大戶的多空部位比', read: ['≥ 1.3 大戶偏多、≤ 0.9 偏空'],
+      grid: ['傳統上順著大戶,但 Binance 只公開 30 天,沒辦法回放驗證,只當參考'],
+      test: '資料只有最近 30 天(約 16 組獨立的 14 天窗口),統計上無法判斷有沒有用。' },
+    { key: 'ls', name: '散戶多空比(帳戶數)', stars: 1, vote: false,
+      role: '做多帳戶 ÷ 做空帳戶', read: ['≥ 2.5 散戶大量做多、≤ 1 偏空'],
+      grid: ['傳統當反向指標,但這裡驗證不了;實測資金費率的擁擠其實是順勢,散戶比可能也一樣,不要直接當反向用'],
+      test: '資料只有最近 30 天,無法驗證。' },
+    { key: 'oi', name: '持倉量變化', stars: 1, vote: false,
+      role: '價格 + 持倉量一起看', read: ['價漲 + 持倉增 = 新多單進場;價跌 + 持倉增 = 空單加碼;持倉減 = 平倉 / 回補'],
+      grid: ['突破區間時看持倉有沒有跟著增加;單獨看沒有方向意義'],
+      test: '資料只有最近 30 天,無法驗證。' },
+    { key: 'taker', name: '主動買賣比', stars: 1, vote: false,
+      role: '主動買入量 ÷ 主動賣出量', read: ['> 1.05 買方積極、< 0.95 賣方積極'],
+      grid: ['變動很快,只適合看短線動能,不拿來決定網格方向'],
+      test: '資料只有最近 30 天,無法驗證。' },
+  ],
 
   /* 低 / 中 / 高風險三組建議
    *

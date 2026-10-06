@@ -305,3 +305,24 @@ const Ind = {
     return 100 * w.filter(x => x <= v).length / w.length;
   },
 };
+
+/* ---------- 籌碼面補充資料(有完整歷史、能回測的三項) ----------
+ * 資金費率歷史(近 100 天,每 8 小時一筆)、恐懼貪婪指數(alternative.me)、期現溢價(Binance 溢價指數日 K) */
+Market.chipExtra = async function (sym) {
+  return this.cached('ce' + sym, 600000, async () => {
+    const [fr, fg, pk] = await Promise.all([
+      this.getJSON(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=300`),
+      this.getJSON('https://api.alternative.me/fng/?limit=3&format=json').catch(() => null),
+      this.getJSON(`https://fapi.binance.com/fapi/v1/premiumIndexKlines?symbol=${sym}&interval=1d&limit=10`).catch(() => null),
+    ]);
+    const byDay = {};
+    fr.forEach(x => { const d = Math.floor(x.fundingTime / 864e5); (byDay[d] = byDay[d] || []).push(+x.fundingRate * 100); });
+    const days = Object.keys(byDay).map(Number).sort((a, b) => a - b);
+    const daily = days.map(d => byDay[d].reduce((a, b) => a + b, 0) / byDay[d].length);
+    return {
+      fundDaily: daily.slice(0, -1).concat(daily.length ? [daily[daily.length - 1]] : []),
+      fng: fg && fg.data ? fg.data.map(x => +x.value) : null,                 // 新到舊
+      prem: pk && pk.length ? +pk[pk.length - 1][4] * 100 : NaN,              // 今天(最新一根)溢價 %
+    };
+  });
+};

@@ -22,8 +22,12 @@ const App = {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   },
 
-  /* 重畫行情頁(換幣種、重新載入、設定改變後都走這裡) */
+  /* 切換分頁並重畫(換幣種、重新載入、設定改變後也走這裡) */
   go(tab, keepScroll) {
+    this.tab = tab || this.tab;
+    $$('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + this.tab));
+    $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === this.tab));
+    $('#hdr-title').textContent = this.TITLES[this.tab];
     $('#hdr-sub').textContent = this.sym().name + ' 永續合約';
     this.renderMarket();
     if (!keepScroll) window.scrollTo(0, 0);
@@ -33,6 +37,8 @@ const App = {
   onClick(e) {
     const seg = e.target.closest('[data-seg]');
     if (seg) return this.onSeg(seg);
+    const tab = e.target.closest('.tab');
+    if (tab) return this.go(tab.dataset.tab);
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const a = b.dataset.act;
@@ -68,7 +74,7 @@ const App = {
     if (this.loading) return;
     if (force) Market._cache = {};
     this.loading = true; this.err = '';
-    if (this.tab === 'market' && !this.data) this.renderMarket();
+    if (!this.data) this.renderMarket();
     try {
       const sym = Store.settings.symbol;
       const [tk, ...ks] = await Promise.all([Market.ticker(sym), ...this.TFS.map(([tf]) => Market.klines(sym, tf, 300))]);
@@ -82,6 +88,7 @@ const App = {
       this.data = { tk, sym, tfs, atrD, at: Date.now(), klAt: Date.now(), h1: null };
       this.loadH1(sym);
       this.loadSent(sym);
+      this.loadChip(sym);
       this.loadOdds(sym);
       this.pickTf(this.tf, true);
     } catch (e) {
@@ -98,7 +105,7 @@ const App = {
       if (!this.data || this.data.sym !== sym) return;
       this.data.h1 = h1;
       const el = $('#sug-card');
-      if (el && this.tab === 'market') el.outerHTML = this.sugCardHtml();
+      if (el) el.outerHTML = this.sugCardHtml();
     } catch (e) { /* 回測數字就不顯示 */ }
   },
   profBt(an) {
@@ -189,13 +196,13 @@ const App = {
   /* 每 15 秒更新報價(只換價格卡 / 機器人清單,不整頁重畫);K 線每 5 分鐘重抓一次 */
   async tick() {
     if (document.hidden || !this.data || this.loading) return;
-    if (this.tab === 'market' && Date.now() - this.data.klAt > 300000) { this.load(true); return; }
+    if (Date.now() - this.data.klAt > 300000) { this.load(true); return; }
     try {
       const tk = await Market.ticker(Store.settings.symbol);
       if (!this.data || this.data.sym !== Store.settings.symbol) return;
       this.data.tk = tk; this.data.at = Date.now();
       const pc = $('#price-card');
-      if (pc && this.tab === 'market') pc.outerHTML = this.priceCardHtml();
+      if (pc) pc.outerHTML = this.priceCardHtml();
     } catch (e) { /* 下次再試 */ }
   },
 
@@ -269,31 +276,94 @@ const App = {
       <p class="cs-text">${text}</p></div>`;
   },
 
-  /* 指標儀表卡:週期切換放在卡片最上面,下面是投票結果、技術面、籌碼面 */
-  indCardHtml() {
-    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
-    const sent = this.sentFor(this.tf);
-    const R = Signal.meters(an, cs, sent, tk.funding, this.tf);
-    const tot = R.items.filter(m => m.vote !== false).length, pct = k => (R.cnt[k] / tot * 100).toFixed(1);
+  /* 指標列:每個指標一條刻度,投票的標偏多 / 偏空 / 中性,不投票的標「參考」 */
+  meterRow(m) {
     const L = { up: '偏多', down: '偏空', flat: '中性' };
-    const row = m => Viz.meter(Object.assign({}, m, { lean: m.lean, leanText: (m.vote === false ? '不投票' : L[m.lean]) + ' · ' + m.leanText }));
-    const tech = R.items.filter(m => m.group === 'tech'), chip = R.items.filter(m => m.group === 'chip');
-    const chipNote = sent ? `Binance 合約 · ${sent.period === '4h' ? '4 小時粒度,近 5 天' : '日粒度,近 30 天'}`
-      : (this.data.sentErr ? '籌碼資料暫時抓不到' : '籌碼資料載入中…');
-    return `<div class="card ind-card" id="ind-card">
-      <div class="card-h"><span class="section-title in">指標儀表</span><span class="hint">切換週期 ↓</span></div>
+    return Viz.meter(Object.assign({}, m, { leanText: (m.vote === false ? '參考' : L[m.lean]) + ' · ' + m.leanText }));
+  },
+  voteBox(T, tn) {
+    const pct = k => (T.cnt[k] / (T.n || 1) * 100).toFixed(1);
+    return `<div class="vote v-${T.vdir}">
+      <div class="vote-bar"><i class="vb-up" style="width:${pct('up')}%"></i><i class="vb-flat" style="width:${pct('flat')}%"></i><i class="vb-dn" style="width:${pct('down')}%"></i></div>
+      <div class="vote-cnt"><span class="up">偏多 ${T.cnt.up}</span><span>中性 ${T.cnt.flat}</span><span class="down">偏空 ${T.cnt.down}</span></div>
+      <div class="vote-v">${tn}:<b>${T.verdict}</b></div></div>`;
+  },
+
+  /* 技術面分頁:週期切換 → 投票 → 技術指標(依實測重要度排序) */
+  techCardHtml() {
+    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
+    const R = Signal.meters(an, cs, null, tk.funding, this.tf, null);
+    const items = R.items.filter(m => m.group === 'tech');
+    return `<div class="card ind-card" id="tech-card">
+      <div class="card-h"><span class="section-title in">技術面指標</span><span class="hint">切換週期 ↓</span></div>
       ${this.seg('tf', this.TFS, this.tf)}
-      <div class="vote v-${R.vdir}">
-        <div class="vote-bar"><i class="vb-up" style="width:${pct('up')}%"></i><i class="vb-flat" style="width:${pct('flat')}%"></i><i class="vb-dn" style="width:${pct('down')}%"></i></div>
-        <div class="vote-cnt"><span class="up">偏多 ${R.cnt.up}</span><span>中性 ${R.cnt.flat}</span><span class="down">偏空 ${R.cnt.down}</span></div>
-        <div class="vote-v">${tn}:<b>${R.verdict}</b></div>
-      </div>
-      <div class="ind-group"><span>技術面</span><small>${tn} K 線 · 依重要度排序</small></div>
-      ${tech.map(row).join('')}
-      <button type="button" class="tech-more" data-act="tech"><span><b>技術面詳解</b><small>重要度排名 · 每日節點走勢 · 詳細說明</small></span><i>›</i></button>
-      <div class="ind-group"><span>籌碼面</span><small>${chipNote}</small></div>
-      ${chip.map(row).join('')}
-      <p class="fine in">反向指標(資金費率、散戶多空比)擁擠的一邊容易被洗;投票只是整理,不是預測,要搭配上面的三週期共振一起看。</p>
+      ${this.voteBox(Signal.tally(items, '技術面'), tn)}
+      <div class="ind-group"><span>技術指標</span><small>${tn} K 線 · 依實測重要度排序</small></div>
+      ${items.map(m => this.meterRow(m)).join('')}
+      <button type="button" class="tech-more" data-act="tech"><span><b>技術面詳解</b><small>日線 / 週線建議 · 每日節點走勢 · 詳細說明</small></span><i>›</i></button>
+      <p class="fine in">投票的是 5 項實測有順勢參考價值的指標(均線、ADX、布林、RSI、MACD);波動狀態不投票,但對網格存活影響最大。</p>
+    </div>`;
+  },
+
+  /* 籌碼面分頁:對網格的提醒(有實測依據的)→ 指標 → 每個指標能不能信 */
+  chipCardHtml() {
+    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
+    const sent = this.sentFor(this.tf), ext = this.data.ext || null;
+    const items = Signal.meters(an, cs, sent, tk.funding, this.tf, ext).items.filter(m => m.group === 'chip');
+    const flags = Signal.chipFlags(tk.funding, ext);
+    const note = sent ? `Binance 合約 · ${sent.period === '4h' ? '4 小時粒度,近 5 天' : '日粒度,近 30 天'}`
+      : (this.data.sentErr ? '部分籌碼資料暫時抓不到' : '籌碼資料載入中…');
+    return `<div class="card chip-card" id="chip-card">
+      <div class="card-h"><span class="section-title in">籌碼面對網格的提醒</span><span class="hint">依 5 年實測</span></div>
+      <ul class="reasons">${flags.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul>
+      <div class="ind-group"><span>籌碼面指標</span><small>${note}</small></div>
+      ${this.seg('tf', this.TFS, this.tf)}
+      ${items.map(m => this.meterRow(m)).join('')}
+      <p class="fine in">只有資金費率有完整歷史可以回測所以參與投票;其餘「參考」的不能當進場依據。週期切換只影響多空比、持倉量、主動買賣比(8 小時看 4h 粒度,日線 / 週線看 1d 粒度)。</p>
+    </div>`;
+  },
+  chipGuideHtml() {
+    const stars = s => '★'.repeat(s) + '<span class="st-off">' + '★'.repeat(5 - s) + '</span>';
+    return `<div class="card">
+      <div class="section-title in">籌碼面指標能不能信?(實測排序)</div>
+      <p class="tk-logic">可回測的有 <b>資金費率、恐懼貪婪、期現溢價</b>(完整歷史);<b>多空比、持倉量、主動買賣比</b>Binance 只公開最近 30 天,統計上無法驗證,只當參考。</p>
+      ${Signal.CHIP.map((d, i) => `<details class="tk-doc chip-doc"><summary><i class="tk-rank">${i + 1}</i><span class="tk-rn"><b>${d.name}</b><small>${d.role}</small></span><span class="stars">${stars(d.stars)}</span></summary>
+        <p class="tk-test"><b>實測</b>${d.test}</p>
+        <h4>怎麼看</h4><ul>${d.read.map(t => `<li>${t}</li>`).join('')}</ul>
+        <h4>開網格怎麼用</h4><ul>${d.grid.map(t => `<li>${t}</li>`).join('')}</ul></details>`).join('')}
+    </div>`;
+  },
+
+  /* 判讀卡(行情分頁) */
+  verdictHtml() {
+    const { an } = this.data, name = this.sym().name, tn = this.tfName(this.tf);
+    return `<div class="card verdict v-${an.dir}">
+      <div class="v-head"><span class="v-tf">${tn} 判讀</span><span class="v-conf">把握度 ${an.strength}</span></div>
+      <div class="v-body">${Viz.gauge(an.score)}
+        <div class="v-side"><div class="v-score">${an.score > 0 ? '+' : ''}${an.score}<small>/ ±5</small></div>
+        <div class="v-title">${name} ${this.lean(an.score)}</div><span class="v-badge">${Signal.DIR_LABEL[an.dir]}</span></div></div>
+      <div class="v-why">${esc(an.why)}</div>
+      <details class="reasons-d" open><summary>判讀依據(${an.reasons.length} 項)</summary>
+        <ul class="reasons">${an.reasons.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul></details>
+    </div>`;
+  },
+
+  /* K 線分頁 */
+  klineHtml() {
+    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
+    const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
+    const ma = k => an.ma[k].slice(off);
+    return `<div class="card">
+      <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
+      ${this.seg('tf', this.TFS, this.tf)}
+      <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間 <i class="lg lg-sup"></i>支撐 <i class="lg lg-res"></i>壓力</div>
+      ${Viz.candles({
+        cs: view, h: 280, year: this.tf === '1w', intraday: this.tf === '8h',
+        overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
+        band: { lo: sug.lower, hi: sug.upper },
+        lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }].concat(this.srLines(cs, this.tf, tk.price)),
+        tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
+      })}
     </div>`;
   },
 
@@ -481,8 +551,18 @@ const App = {
       if (!this.data || this.data.sym !== sym) return;
       this.data.sent = { '4h': a, '1d': b };
     } catch (e) { if (this.data) this.data.sentErr = true; }
-    const el = $('#ind-card');
-    if (el && this.tab === 'market') el.outerHTML = this.indCardHtml();
+    const el = $('#chip-card');
+    if (el) el.outerHTML = this.chipCardHtml();
+  },
+  /* 資金費率歷史、恐懼貪婪、期現溢價(有完整歷史的三項) */
+  async loadChip(sym) {
+    try {
+      const ext = await Market.chipExtra(sym);
+      if (!this.data || this.data.sym !== sym) return;
+      this.data.ext = ext;
+    } catch (e) { /* 這幾項就不顯示 */ }
+    const el = $('#chip-card');
+    if (el) el.outerHTML = this.chipCardHtml();
   },
 
   /* K 線圖上的支撐 / 壓力線:上下各取最近 2 個區(不拉大圖的價格範圍) */
@@ -493,45 +573,25 @@ const App = {
     return out;
   },
 
-  /* ============ 行情頁 ============ */
+  /* ============ 五個分頁 ============ */
+  PAGES: ['market', 'tech', 'chip', 'sug', 'kline'],
+  TITLES: { market: '行情與訊號', tech: '技術面', chip: '籌碼面', sug: '建議參數', kline: 'K 線' },
+
   renderMarket() {
-    const root = $('#page-market');
-    if (this.err && !this.data) { root.innerHTML = this.errBox(); return; }
-    if (!this.data) { root.innerHTML = '<div class="card skeleton"><div class="spin"></div>載入 8 小時 / 日線 / 週線行情中…</div>'; return; }
-    const { tk, cs, an } = this.data, name = this.sym().name, tn = this.tfName(this.tf);
-    const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
-    const ma = k => an.ma[k].slice(off);
-    root.innerHTML = `
-      ${this.guideHtml()}
-      ${this.priceCardHtml()}
-      ${this.err ? this.errBox() : ''}
-      ${this.consensusHtml()}
-      ${this.oddsCardHtml()}
-      ${this.indCardHtml()}
-      <div class="card verdict v-${an.dir}">
-        <div class="v-head"><span class="v-tf">${tn} 判讀</span><span class="v-conf">把握度 ${an.strength}</span></div>
-        <div class="v-body">${Viz.gauge(an.score)}
-          <div class="v-side"><div class="v-score">${an.score > 0 ? '+' : ''}${an.score}<small>/ ±5</small></div>
-          <div class="v-title">${name} ${this.lean(an.score)}</div><span class="v-badge">${Signal.DIR_LABEL[an.dir]}</span></div></div>
-        <div class="v-why">${esc(an.why)}</div>
-        <details class="reasons-d" open><summary>判讀依據(${an.reasons.length} 項)</summary>
-          <ul class="reasons">${an.reasons.map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join('')}</ul></details>
-      </div>
-      ${this.sugCardHtml()}
-      <div class="card">
-        <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
-        ${this.seg('tf', this.TFS, this.tf)}
-        <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間 <i class="lg lg-sup"></i>支撐 <i class="lg lg-res"></i>壓力</div>
-        ${Viz.candles({
-          cs: view, h: 260, year: this.tf === '1w', intraday: this.tf === '8h',
-          overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
-          band: { lo: sug.lower, hi: sug.upper },
-          lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }].concat(this.srLines(cs, this.tf, tk.price)),
-          tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
-        })}
-      </div>
-      <p class="fine">訊號只是機率上的參考,不是預測。網格賺的是震盪,方向選錯或趨勢強時會累積虧損倉位,務必控制槓桿與止損。</p>`;
-    Viz.bind(root);
+    const roots = {};
+    this.PAGES.forEach(p => { roots[p] = $('#page-' + p); });
+    if (!this.data) {
+      const html = this.err ? this.errBox() : '<div class="card skeleton"><div class="spin"></div>載入 8 小時 / 日線 / 週線行情中…</div>';
+      this.PAGES.forEach(p => { roots[p].innerHTML = html; });
+      return;
+    }
+    const foot = '<p class="fine">訊號只是機率上的參考,不是預測。網格賺的是震盪,方向選錯或趨勢強時會累積虧損倉位,務必控制槓桿與止損。</p>';
+    roots.market.innerHTML = this.guideHtml() + this.priceCardHtml() + (this.err ? this.errBox() : '') + this.consensusHtml() + this.oddsCardHtml() + this.verdictHtml() + foot;
+    roots.tech.innerHTML = this.techCardHtml() + foot;
+    roots.chip.innerHTML = this.chipCardHtml() + this.chipGuideHtml() + foot;
+    roots.sug.innerHTML = this.sugCardHtml() + foot;
+    roots.kline.innerHTML = this.klineHtml() + foot;
+    this.PAGES.forEach(p => Viz.bind(roots[p]));
   },
 
   /* ============ 設定 ============ */
