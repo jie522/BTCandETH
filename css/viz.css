@@ -302,3 +302,32 @@ input.slider:focus { outline: none; }
 .adv .tbl { margin-top: 8px; }
 .adv-watch { margin-top: 10px; font-size: 13px; }
 .adv-watch ul { margin: 4px 0 0; padding-left: 18px; line-height: 1.7; color: var(--muted); }
+
+/* ---------- 支撐 / 壓力線 ---------- */
+:root { --sup: #2f9e8f; --res: #c0632b; }
+.ch-sup { stroke: var(--sup); stroke-width: 1; stroke-dasharray: 5 3; } .ch-sup-t { fill: var(--sup); } .ch-sup-bg { fill: var(--sup); }
+.ch-res { stroke: var(--res); stroke-width: 1; stroke-dasharray: 5 3; } .ch-res-t { fill: var(--res); } .ch-res-bg { fill: var(--res); }
+.lg-sup { background: var(--sup); } .lg-res { background: var(--res); }
+
+/* ---------- 網格勝率(歷史實測) ---------- */
+.od-now { font-size: 14px; margin-bottom: 4px; }
+.od-sub { font-size: 12px; color: var(--muted); margin: 0 0 8px; line-height: 1.6; }
+.od-sub b { color: var(--text); }
+.od-row { display: grid; grid-template-columns: 76px 1fr 44px; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
+.od-l em { font-style: normal; font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; }
+.od-track { height: 10px; border-radius: 5px; background: var(--card2); overflow: hidden; }
+.od-track i { display: block; height: 100%; background: color-mix(in srgb, var(--accent) 45%, var(--card2)); border-radius: 5px; }
+.od-row.best .od-track i { background: var(--accent); }
+.od-row b { text-align: right; font-variant-numeric: tabular-nums; }
+.od-more summary { cursor: pointer; font-size: 13px; color: var(--accent); min-height: 34px; display: flex; align-items: center; }
+.od-tbl th, .od-tbl td { text-align: right; font-variant-numeric: tabular-nums; }
+.od-tbl th:first-child, .od-tbl td:first-child { text-align: left; }
+.od-tbl tr.cur td { font-weight: 800; color: var(--accent); }
+
+/* ---------- 技術面詳解:實測、不投票 ---------- */
+.tk-test { margin: 8px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--card2); font-size: 12px; line-height: 1.7; }
+.tk-test b { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font-size: 11px; }
+.tk-row.nv { opacity: .78; }
+.nv-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.od-l em.sig { background: var(--card2); color: var(--muted); border: 1px solid var(--line); }
+.od-warn { font-size: 12px; color: var(--warn); margin: 6px 0 4px; line-height: 1.6; }

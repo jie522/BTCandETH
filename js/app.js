@@ -74,7 +74,7 @@ const App = {
       const [tk, ...ks] = await Promise.all([Market.ticker(sym), ...this.TFS.map(([tf]) => Market.klines(sym, tf, 300))]);
       const tfs = {};
       this.TFS.forEach(([tf], i) => { tfs[tf] = { cs: ks[i], an: Signal.analyze(ks[i], tk.funding, Store.settings.fee) }; });
-      const atrD = tfs['1d'].an.atrPct;
+      const d1 = tfs['1d'].an, atrD = Math.max(d1.atrPct, isNaN(d1.atrMed90) ? 0 : d1.atrMed90);   // 波動壓縮時用 90 天正常波動當尺
       Object.values(tfs).forEach(t => {
         t.an.profiles = Signal.profiles(t.an, tk.price, atrD, Store.settings.fee, Store.settings.mmr);
         t.an.sug = t.an.profiles[1];
@@ -82,6 +82,7 @@ const App = {
       this.data = { tk, sym, tfs, atrD, at: Date.now(), klAt: Date.now(), h1: null };
       this.loadH1(sym);
       this.loadSent(sym);
+      this.loadOdds(sym);
       this.pickTf(this.tf, true);
     } catch (e) {
       this.err = '連不上交易所行情(' + (e.message || e) + '),請檢查網路後重試';
@@ -109,8 +110,41 @@ const App = {
     return an._bt;
   },
 
+  /* 歷史實測勝率:抓近 2,000 天日線在背景算,算完只重畫勝率卡 */
+  async loadOdds(sym) {
+    try {
+      const cs = await Market.klines(sym, '1d', 2000);
+      if (!this.data || this.data.sym !== sym) return;
+      this.data.odds = Signal.gridOdds(cs);
+    } catch (e) { if (this.data) this.data.oddsErr = true; }
+    const el = $('#odds-card');
+    if (el) el.outerHTML = this.oddsCardHtml();
+  },
+
+  ODDS_VOL: { low: '波動壓縮', mid: '波動正常', high: '波動高檔' },
+  oddsCardHtml() {
+    const O = this.data.odds;
+    if (!O) return `<div class="card odds-card" id="odds-card"><div class="section-title in">網格勝率 · 歷史實測</div>
+      <p class="fine in">${this.data.oddsErr ? '歷史日線暫時抓不到' : '回放過去約 5 年日線中…'}</p></div>`;
+    const m = O.match, V = this.ODDS_VOL, names = { neutral: '中性', long: '做多', short: '做空' };
+    const bar = k => `<div class="od-row${k === O.best ? ' best' : ''}"><span class="od-l">${names[k]}${k === O.best ? ' <em>最高</em>' : k === O.now.dir ? ' <em class="sig">訊號</em>' : ''}</span>
+      <span class="od-track"><i style="width:${m[k].toFixed(0)}%"></i></span><b>${m[k].toFixed(0)}%</b></div>`;
+    const tbl = ['low', 'mid', 'high'].map(v => `<tr class="${v === O.now.vol ? 'cur' : ''}"><td>${V[v]}</td><td>${O.table[v].neutral.toFixed(0)}%</td><td>${O.table[v].long.toFixed(0)}%</td><td>${O.table[v].short.toFixed(0)}%</td><td>${O.table[v].n}</td></tr>`).join('');
+    return `<div class="card odds-card" id="odds-card">
+      <div class="card-h"><span class="section-title in">網格勝率 · 歷史實測</span><span class="hint">${fmt.date(O.from, true)} 起 ${O.days} 天</span></div>
+      <div class="od-now">今天:<b>${V[O.now.vol]}</b>(ATR 排名 ${O.now.rank.toFixed(0)})· 日線訊號 <b>${Signal.DIR_LABEL[O.now.dir]}</b></div>
+      <p class="od-sub">過去${O.basis === 'both' ? '「波動狀態 + 方向訊號」都跟今天一樣' : '「波動狀態」跟今天一樣'}的 ${m.n} 天,照中風險規則開網格,${O.H} 天內<b>沒有在輸的那邊被打出區間</b>的比例:</p>
+      ${['neutral', 'long', 'short'].map(bar).join('')}
+      <p class="od-warn">樣本 ${m.n} 天,但相鄰天的 ${O.H} 天窗口互相重疊,實際只相當於約 ${Math.max(1, Math.round(m.n / O.H))} 組獨立行情${m.n < 150 ? ',樣本偏少,只看大方向' : ''}${O.best !== O.now.dir && O.now.dir !== 'neutral' && m[O.best] - m[O.now.dir] < 15 ? ';跟訊號方向的差距不大,不建議只憑這個反向操作' : ''}。</p>
+      <details class="od-more"><summary>各波動狀態的安全率</summary>
+        <table class="tbl od-tbl"><tr><th></th><th>中性</th><th>做多</th><th>做空</th><th>天數</th></tr>${tbl}</table>
+      </details>
+      <p class="fine in">中性兩邊破都算輸;做多只算跌破下限、做空只算突破上限(往有利的那邊破是獲利出場)。區間半寬 = max(8%, 2.5 × 日線正常波動)。這是過去的統計,不保證未來。</p>
+    </div>`;
+  },
+
   TIER_NOTE: {
-    low: '區間寬、槓桿低,強平價離區間 20% 以上;單邊走勢也撐得住,賺得慢但穩。方向不夠明確時會自動用中性。',
+    low: '區間寬、槓桿低,強平價離區間 20% 以上;單邊走勢也撐得住,賺得慢但穩。方向跟著判讀,沒有明確方向時才用中性。',
     mid: '兼顧套利次數與安全距離,強平價離區間 10% 以上;適合大多數情況的起手式。',
     high: '區間窄、格子密,套利次數最多;但價格很容易跑出區間,強平也近。只適合小資金、要常盯盤、一定要設止損。',
   },
@@ -240,9 +274,9 @@ const App = {
     const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
     const sent = this.sentFor(this.tf);
     const R = Signal.meters(an, cs, sent, tk.funding, this.tf);
-    const tot = R.items.length, pct = k => (R.cnt[k] / tot * 100).toFixed(1);
+    const tot = R.items.filter(m => m.vote !== false).length, pct = k => (R.cnt[k] / tot * 100).toFixed(1);
     const L = { up: '偏多', down: '偏空', flat: '中性' };
-    const row = m => Viz.meter(Object.assign({}, m, { lean: m.lean, leanText: L[m.lean] + ' · ' + m.leanText }));
+    const row = m => Viz.meter(Object.assign({}, m, { lean: m.lean, leanText: (m.vote === false ? '不投票' : L[m.lean]) + ' · ' + m.leanText }));
     const tech = R.items.filter(m => m.group === 'tech'), chip = R.items.filter(m => m.group === 'chip');
     const chipNote = sent ? `Binance 合約 · ${sent.period === '4h' ? '4 小時粒度,近 5 天' : '日粒度,近 30 天'}`
       : (this.data.sentErr ? '籌碼資料暫時抓不到' : '籌碼資料載入中…');
@@ -273,40 +307,72 @@ const App = {
     this.renderTech();
   },
 
-  /* 每個指標的圖、數值格式、tooltip */
+  /* 每個指標的圖、數值格式、tooltip
+   *   ln:不投票的指標也有多空傾向時,用它畫節點列;txt:數值欄改顯示文字;hl(last, SR):圖上的水平參考線
+   *   noTrend:沒有「近 7 天從多少到多少」這種數值趨勢;noAxis:數值本身沒意義,不顯示刻度 */
   TECH_VIEW: {
-    dmi: { v: q => q.adx, f: v => v.toFixed(0), lean: q => `+DI ${q.pdi.toFixed(0)} / −DI ${q.mdi.toFixed(0)}`,
-      series: N => [{ d: N.map(q => q.adx), cls: 'ch-eq' }, { d: N.map(q => q.pdi), cls: 'ch-pdi' }, { d: N.map(q => q.mdi), cls: 'ch-mdi' }],
-      lines: [20, 35], legend: '<i class="lg lg-eq"></i>ADX <i class="lg lg-pdi"></i>+DI <i class="lg lg-mdi"></i>−DI',
-      tip: q => `<span>ADX ${q.adx.toFixed(1)}</span><span>+DI ${q.pdi.toFixed(1)} · −DI ${q.mdi.toFixed(1)}</span>` },
+    atr: { v: q => q.atrRank, f: v => isNaN(v) ? '—' : v.toFixed(0), txt: q => (q.atrRank < 20 ? '壓縮 ' : q.atrRank > 80 ? '高檔 ' : '正常 ') + q.atrRank.toFixed(0), lean: q => `ATR ${q.atrPct.toFixed(2)}% · ${q.atrRank < 20 ? '壓縮' : q.atrRank > 80 ? '高檔' : '正常'}`,
+      series: N => [{ d: N.map(q => q.atrRank), cls: 'ch-eq' }], lines: [20, 80], legend: '<i class="lg lg-eq"></i>ATR 在近 120 根的百分位(< 20 壓縮、> 80 高檔)',
+      tip: q => `<span>ATR ${q.atrPct.toFixed(2)}% · 排名 ${q.atrRank.toFixed(0)}</span>` },
     ma: { v: q => q.dev, f: v => fmt.pct(v, 1), lean: q => '離 MA200 ' + fmt.pct(q.dev, 1),
       series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }, { d: N.map(q => q.ma50), cls: 'ch-ma50' }, { d: N.map(q => q.ma200), cls: 'ch-ma200' }],
       lines: [], legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200',
       tip: q => `<span>MA50 ${fmt.n(q.ma50, 0)} · MA200 ${fmt.n(q.ma200, 0)}</span><span>離 MA200 ${fmt.pct(q.dev, 1)}</span>` },
+    dmi: { v: q => q.adx, f: v => v.toFixed(0), lean: q => `+DI ${q.pdi.toFixed(0)} / −DI ${q.mdi.toFixed(0)}`,
+      series: N => [{ d: N.map(q => q.adx), cls: 'ch-eq' }, { d: N.map(q => q.pdi), cls: 'ch-pdi' }, { d: N.map(q => q.mdi), cls: 'ch-mdi' }],
+      lines: [20, 35], legend: '<i class="lg lg-eq"></i>ADX <i class="lg lg-pdi"></i>+DI <i class="lg lg-mdi"></i>−DI',
+      tip: q => `<span>ADX ${q.adx.toFixed(1)}</span><span>+DI ${q.pdi.toFixed(1)} · −DI ${q.mdi.toFixed(1)}</span>` },
+    pb: { v: q => q.pb, f: v => v.toFixed(0), lean: q => `帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位`,
+      series: N => [{ d: N.map(q => q.pb), cls: 'ch-eq' }], lines: [0, 50, 100], legend: '<i class="lg lg-eq"></i>%B(0 = 下軌、100 = 上軌)',
+      tip: q => `<span>%B ${q.pb.toFixed(0)}</span><span>帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位</span>` },
+    rsi: { v: q => q.rsi, f: v => v.toFixed(0), lean: q => q.rsi >= 70 ? '過熱(動能強)' : q.rsi <= 30 ? '超賣(動能弱)' : q.rsi >= 55 ? '動能偏強' : q.rsi <= 45 ? '動能偏弱' : '中性',
+      series: N => [{ d: N.map(q => q.rsi), cls: 'ch-eq' }], lines: [30, 50, 70], legend: '<i class="lg lg-eq"></i>RSI(14)',
+      tip: q => `<span>RSI ${q.rsi.toFixed(1)}</span>` },
     macd: { v: q => q.hist, f: v => (v > 0 ? '+' : '') + fmt.n(v, 2), lean: q => q.hist > 0 ? 'DIF 在 DEA 之上' : 'DIF 在 DEA 之下',
       series: N => [{ d: N.map(q => q.dif), cls: 'ch-dif' }, { d: N.map(q => q.dea), cls: 'ch-dea' }],
       lines: [0], legend: '<i class="lg lg-dif"></i>DIF <i class="lg lg-dea"></i>DEA(交叉 = 柱翻正 / 翻負)',
       tip: q => `<span>DIF ${fmt.n(q.dif, 2)} · DEA ${fmt.n(q.dea, 2)}</span><span>柱 ${(q.hist > 0 ? '+' : '') + fmt.n(q.hist, 2)}</span>` },
-    rsi: { v: q => q.rsi, f: v => v.toFixed(0), lean: q => q.rsi >= 70 ? '過熱' : q.rsi <= 30 ? '超賣' : q.rsi >= 55 ? '動能偏強' : q.rsi <= 45 ? '動能偏弱' : '中性',
-      series: N => [{ d: N.map(q => q.rsi), cls: 'ch-eq' }], lines: [30, 50, 70], legend: '<i class="lg lg-eq"></i>RSI(14)',
-      tip: q => `<span>RSI ${q.rsi.toFixed(1)}</span>` },
-    pb: { v: q => q.pb, f: v => v.toFixed(0), lean: q => `帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位`,
-      series: N => [{ d: N.map(q => q.pb), cls: 'ch-eq' }], lines: [0, 50, 100], legend: '<i class="lg lg-eq"></i>%B(0 = 下軌、100 = 上軌)',
-      tip: q => `<span>%B ${q.pb.toFixed(0)}</span><span>帶寬 ${isNaN(q.bwRank) ? '—' : q.bwRank.toFixed(0)} 百分位</span>` },
-    atr: { v: q => q.atrPct, f: v => v.toFixed(2) + '%', lean: () => '不參與投票',
-      series: N => [{ d: N.map(q => q.atrPct), cls: 'ch-eq' }], lines: [], legend: '<i class="lg lg-eq"></i>ATR(14)÷ 價格',
-      tip: q => `<span>ATR ${q.atrPct.toFixed(2)}%</span>` },
+    struct: { v: q => q.price, f: v => fmt.n(v, 0), txt: q => q.x.struct.name, ln: q => q.x.struct.lean, noTrend: true, lean: q => q.x.struct.text,
+      series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }], lines: [],
+      hl: last => [{ y: last.x.struct.h2, cls: 'ch-res', label: '前高' }, { y: last.x.struct.l2, cls: 'ch-sup', label: '前低' }].filter(l => l.y > 0),
+      legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-res"></i>最近轉折高點 <i class="lg lg-sup"></i>最近轉折低點',
+      tip: q => `<span>${q.x.struct.name}</span>` },
+    sr: { v: q => q.price, f: v => fmt.n(v, 0), noTrend: true,
+      txt: (q, SR) => SR.sup[0] ? fmt.pct((SR.sup[0].mid / q.price - 1) * 100, 1) : '—',
+      lean: (q, SR) => `最近支撐 ${SR.sup[0] ? fmt.n(SR.sup[0].mid, 0) + '(' + SR.sup[0].touches + ' 次)' : '—'} · 壓力 ${SR.res[0] ? fmt.n(SR.res[0].mid, 0) + '(' + SR.res[0].touches + ' 次)' : '—'}`,
+      series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }], lines: [],
+      hl: (last, SR) => SR.sup.slice(0, 2).map((z, i) => ({ y: z.mid, cls: 'ch-sup', label: 'S' + (i + 1) }))
+        .concat(SR.res.slice(0, 2).map((z, i) => ({ y: z.mid, cls: 'ch-res', label: 'R' + (i + 1) }))),
+      legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-sup"></i>支撐區 <i class="lg lg-res"></i>壓力區(數值 = 離最近支撐多遠)',
+      tip: q => '' },
+    vol: { v: q => q.x.vol.vr, f: v => isNaN(v) ? '—' : v.toFixed(2) + 'x', ln: q => q.x.vol.lean, lean: q => q.x.vol.text, noAxis: true,
+      series: N => [{ d: N.map(q => q.obv), cls: 'ch-eq' }], lines: [], legend: '<i class="lg lg-eq"></i>OBV 能量潮(看方向,數字本身沒意義;右上是量比)',
+      tip: q => `<span>量比 ${isNaN(q.x.vol.vr) ? '—' : q.x.vol.vr.toFixed(2)}x</span><span>${q.x.vol.text}</span>` },
+    kd: { v: q => q.k, f: v => v.toFixed(0), ln: q => q.x.kd, lean: q => `K ${q.k.toFixed(0)} / D ${q.d.toFixed(0)}${q.k >= 80 ? ' · 超買區' : q.k <= 20 ? ' · 超賣區' : ''}`,
+      series: N => [{ d: N.map(q => q.k), cls: 'ch-eq' }, { d: N.map(q => q.d), cls: 'ch-dea' }], lines: [20, 50, 80],
+      legend: '<i class="lg lg-eq"></i>K <i class="lg lg-dea"></i>D(9, 3, 3)', tip: q => `<span>K ${q.k.toFixed(1)} · D ${q.d.toFixed(1)}</span>` },
+    candle: { v: q => q.price, f: v => fmt.n(v, 0), txt: q => q.x.candle.name, ln: q => q.x.candle.lean, noTrend: true, lean: q => q.x.candle.text,
+      series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }], lines: [], legend: '<i class="lg lg-price"></i>價格(下方節點列 = 每天收盤 K 線型態)',
+      tip: q => `<span>${q.x.candle.name}</span>`,
+      trend: (N, k, unit) => {
+        const c = {};
+        N.slice(-k).forEach(q => { const nm = q.x.candle.name; if (!/一般/.test(nm)) c[nm] = (c[nm] || 0) + 1; });
+        const s = Object.entries(c).map(([nm, x]) => `${nm} ×${x}`).join('、');
+        return [`近 ${k} ${unit}出現:${s || '沒有特殊型態'}`];
+      } },
   },
 
   renderTech() {
     const root = $('#tech-body');
     if (!root || !this.data) return;
-    const tf = this.techTf, wk = tf === '1w', unit = wk ? '週' : '天';
-    const N = Signal.techHistory(this.data.tfs[tf].cs, tf, wk ? 26 : 30), last = N[N.length - 1];
+    const tf = this.techTf, wk = tf === '1w', unit = wk ? '週' : '天', cs = this.data.tfs[tf].cs;
+    const N = Signal.techHistory(cs, tf, wk ? 26 : 30), last = N[N.length - 1];
+    const SR = Signal.nearSR(Signal.levels(cs, tf), last.price);
     const lbl = q => (wk ? '週 ' : '') + fmt.date(q.t);
     const L = { up: '偏多', down: '偏空', flat: '中性' }, lc = l => l === 'up' ? 'up' : l === 'down' ? 'down' : '';
     const k = Math.min(7, N.length - 1), prev = N[N.length - 1 - k];
     const sgn = v => (v > 0 ? '+' : '') + v;
+    const lnOf = d => d.vote ? (q => q.lean[d.key]) : this.TECH_VIEW[d.key].ln;
 
     /* 每日投票淨值 */
     const dn = last.net - prev.net;
@@ -318,49 +384,54 @@ const App = {
       })}
       <p class="tk-sum">最新 <b class="${fmt.cls(last.net)}">${sgn(last.net)}</b>(偏多 ${last.cnt.up} · 中性 ${last.cnt.flat} · 偏空 ${last.cnt.down});
         ${k} ${unit}前 ${sgn(prev.net)} → <b>${dn >= 2 ? '技術面轉強' : dn <= -2 ? '技術面轉弱' : '大致持平'}</b></p>
-      <p class="fine in">每${unit}一個節點,5 項技術指標各投一票(ATR 不投),淨值 = 偏多票 − 偏空票。籌碼面 Binance 只保留 30 天且粒度不同,不列入。</p>
+      <p class="fine in">每${unit}一個節點,均線、ADX、布林、RSI、MACD 5 項各投一票(實測有順勢參考價值的才投),淨值 = 偏多票 − 偏空票。</p>
     </div>`;
 
     /* 重要度排名總覽 */
     const stars = s => '★'.repeat(s) + '<span class="st-off">' + '★'.repeat(5 - s) + '</span>';
     const rank = `<div class="card">
-      <div class="section-title in">重要度排名(以開合約網格的角度)</div>
-      <p class="tk-logic">先問<b>能不能開</b>(ADX)→ <b>往哪開</b>(均線)→ <b>動能有沒有在轉</b>(MACD)→ <b>進場時機</b>(RSI、布林)→ <b>格子尺寸</b>(ATR)</p>
+      <div class="section-title in">重要度排名(依 5 年 ETH / BTC 日線實測)</div>
+      <p class="tk-logic">先看<b>波動狀態</b>(會不會被打出區間)→ 再看<b>方向</b>(均線、ADX、布林、RSI、MACD)→ 文章常見的<b>結構、支撐壓力、量價、KD、K 線型態</b>只當參考:實測對接下來 14 天幾乎沒有預測力</p>
       ${Signal.TECH.map((d, i) => {
-        const l = d.vote ? last.lean[d.key] : null, V = this.TECH_VIEW[d.key];
-        return `<button type="button" class="tk-row" data-act="tk-jump" data-v="${d.key}">
+        const ln = lnOf(d), l = ln ? ln(last) : null, V = this.TECH_VIEW[d.key];
+        const val = V.txt ? V.txt(last, SR) : V.f(V.v(last));
+        return `<button type="button" class="tk-row${d.vote ? '' : ' nv'}" data-act="tk-jump" data-v="${d.key}">
           <i class="tk-rank">${i + 1}</i><span class="tk-rn"><b>${d.name}</b><small>${d.role}</small></span>
-          <span class="tk-rr"><span class="stars">${stars(d.stars)}</span>${l ? `<span class="lean-chip ln-${l}">${L[l]}</span>` : `<span class="lean-chip">${V.f(V.v(last))}</span>`}</span></button>`;
+          <span class="tk-rr"><span class="stars">${stars(d.stars)}</span>${l ? `<span class="lean-chip ln-${l}">${L[l]}</span>` : `<span class="lean-chip">${val}</span>`}</span></button>`;
       }).join('')}
+      <p class="fine in">星等 = 對合約網格勝率的實測影響;灰底的不參與投票。每個指標的「實測」寫在各自卡片上。</p>
     </div>`;
 
     /* 各指標 */
     const cards = Signal.TECH.map((d, r) => {
-      const V = this.TECH_VIEW[d.key], vals = N.map(V.v), ok = vals.filter(v => !isNaN(v));
+      const V = this.TECH_VIEW[d.key], ln = lnOf(d), vals = N.map(V.v), ok = vals.filter(v => !isNaN(v));
       const a = V.v(prev), b = V.v(last), rng = (Math.max(...ok) - Math.min(...ok)) || 1;
-      const dir = Math.abs(b - a) < rng * 0.1 ? '持平' : b > a ? '上升' : '下降';
-      const lines = [`近 ${k} ${unit}:${V.f(a)} → <b>${V.f(b)}</b>,${dir}`];
+      const lines = [];
+      if (!V.noTrend) lines.push(`近 ${k} ${unit}:${V.f(a)} → <b>${V.f(b)}</b>,${Math.abs(b - a) < rng * 0.1 ? '持平' : b > a ? '上升' : '下降'}`);
+      if (V.trend) lines.push(...V.trend(N, k, unit));
       let strip = '';
-      if (d.vote) {
-        const ls = N.map(q => q.lean[d.key]), cur = ls[ls.length - 1];
+      if (ln) {
+        const ls = N.map(ln), cur = ls[ls.length - 1];
         let st = 1; while (st < ls.length && ls[ls.length - 1 - st] === cur) st++;
         let fj = -1; for (let j = ls.length - 1; j > 0; j--) if (ls[j] !== ls[j - 1]) { fj = j; break; }
         const c7 = { up: 0, down: 0, flat: 0 }; ls.slice(-k).forEach(l => c7[l]++);
         lines.push(`已連續 <b class="${lc(cur)}">${st} ${unit}${L[cur]}</b>${fj > 0 ? `;最近一次轉向:${lbl(N[fj])} 由${L[ls[fj - 1]]}轉${L[ls[fj]]}` : `;${N.length} ${unit}內都沒有轉向`}`);
         lines.push(`近 ${k} ${unit}:偏多 ${c7.up} · 中性 ${c7.flat} · 偏空 ${c7.down}`);
-        strip = `${Viz.nodes(ls, N.map(q => lbl(q) + ' ' + L[q.lean[d.key]]))}
+        strip = `${Viz.nodes(ls, N.map(q => lbl(q) + ' ' + L[ln(q)]))}
           <div class="nd-x"><span>${lbl(N[0])}</span><span>每格 = 1 ${unit}</span><span>${lbl(last)}</span></div>`;
       }
-      const cl = d.vote ? last.lean[d.key] : 'flat';
-      return `<div class="card tk-card" id="tk-${d.key}">
-        <div class="tk-head"><i class="tk-rank">${r + 1}</i><span class="tk-rn"><b>${d.name}</b><span class="stars">${stars(d.stars)}</span></span><b class="tk-val">${V.f(b)}</b></div>
-        <div class="tk-lean"><span class="lean-chip ln-${cl}">${d.vote ? L[cl] + ' · ' : ''}${V.lean(last)}</span><span class="tk-role">${d.role}</span></div>
+      const cl = ln ? ln(last) : 'flat';
+      const hl = V.hl ? V.hl(last, SR).map(l => Object.assign({ range: false }, l)) : [];
+      return `<div class="card tk-card${d.vote ? '' : ' nv'}" id="tk-${d.key}">
+        <div class="tk-head"><i class="tk-rank">${r + 1}</i><span class="tk-rn"><b>${d.name}</b><span class="stars">${stars(d.stars)}</span></span><b class="tk-val">${V.txt ? V.txt(last, SR) : V.f(b)}</b></div>
+        <div class="tk-lean"><span class="lean-chip ln-${cl}">${d.vote ? L[cl] + ' · ' : ln ? '參考 · ' : ''}${V.lean(last, SR)}</span>${d.vote ? '' : '<span class="nv-tag">不投票</span>'}<span class="tk-role">${d.role}</span></div>
         <div class="legend">${V.legend}</div>
-        ${Viz.line({ series: V.series(N), lines: V.lines.map(y => ({ y, cls: 'ch-th', label: String(y) })), h: 150, x: [lbl(N[0]), lbl(last)],
-          yfmt: V.lines.length ? () => '' : undefined },
-          i => { const q = N[i], l = q.lean[d.key]; return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span>${V.tip(q)}${d.vote ? `<span class="${lc(l)}">${L[l]}</span>` : ''}`; })}
+        ${Viz.line({ series: V.series(N), lines: V.lines.map(y => ({ y, cls: 'ch-th', label: String(y) })).concat(hl), h: 150, x: [lbl(N[0]), lbl(last)],
+          yfmt: V.lines.length || V.noAxis ? () => '' : undefined },
+          i => { const q = N[i], l = ln ? ln(q) : null; return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span>${V.tip(q)}${l ? `<span class="${lc(l)}">${L[l]}</span>` : ''}`; })}
         ${strip}
         <ul class="tk-trend">${lines.map(t => `<li>${t}</li>`).join('')}</ul>
+        <p class="tk-test"><b>實測</b>${d.test}</p>
         <details class="tk-doc"><summary>詳細說明</summary>
           <h4>為什麼排第 ${r + 1}</h4><p>${d.why}</p>
           <h4>它是什麼</h4><p>${d.what}</p>
@@ -374,7 +445,7 @@ const App = {
 
     /* 日線 / 週線操作建議(不跟著下面的週期切換) */
     const T = this.data.tfs, advOf = t => {
-      const cs = T[t].cs, A = Signal.advice(t, T[t].an, Signal.techHistory(cs, t, t === '1w' ? 26 : 30));
+      const cs = T[t].cs, A = Signal.advice(t, T[t].an, Signal.techHistory(cs, t, t === '1w' ? 26 : 30), cs);
       return Object.assign(A, { tn: this.tfName(t) });
     };
     const aD = advOf('1d'), aW = advOf('1w');
@@ -414,6 +485,14 @@ const App = {
     if (el && this.tab === 'market') el.outerHTML = this.indCardHtml();
   },
 
+  /* K 線圖上的支撐 / 壓力線:上下各取最近 2 個區(不拉大圖的價格範圍) */
+  srLines(cs, tf, price) {
+    const sr = Signal.nearSR(Signal.levels(cs, tf), price), out = [];
+    sr.sup.slice(0, 2).forEach((z, i) => out.push({ y: z.mid, cls: 'ch-sup', label: 'S' + (i + 1) + ' ' + fmt.n(z.mid, 0), range: false }));
+    sr.res.slice(0, 2).forEach((z, i) => out.push({ y: z.mid, cls: 'ch-res', label: 'R' + (i + 1) + ' ' + fmt.n(z.mid, 0), range: false }));
+    return out;
+  },
+
   /* ============ 行情頁 ============ */
   renderMarket() {
     const root = $('#page-market');
@@ -427,6 +506,7 @@ const App = {
       ${this.priceCardHtml()}
       ${this.err ? this.errBox() : ''}
       ${this.consensusHtml()}
+      ${this.oddsCardHtml()}
       ${this.indCardHtml()}
       <div class="card verdict v-${an.dir}">
         <div class="v-head"><span class="v-tf">${tn} 判讀</span><span class="v-conf">把握度 ${an.strength}</span></div>
@@ -441,12 +521,12 @@ const App = {
       <div class="card">
         <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
         ${this.seg('tf', this.TFS, this.tf)}
-        <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間</div>
+        <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間 <i class="lg lg-sup"></i>支撐 <i class="lg lg-res"></i>壓力</div>
         ${Viz.candles({
           cs: view, h: 260, year: this.tf === '1w', intraday: this.tf === '8h',
           overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
           band: { lo: sug.lower, hi: sug.upper },
-          lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }],
+          lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }].concat(this.srLines(cs, this.tf, tk.price)),
           tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
         })}
       </div>

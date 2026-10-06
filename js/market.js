@@ -249,6 +249,54 @@ const Ind = {
     return { mid, up, lo, bw };
   },
 
+  /* KD 隨機指標(台灣常用 9, 3, 3):RSV → K = ⅔K + ⅓RSV,D = ⅔D + ⅓K,起始值 50 */
+  kd(cs, p = 9) {
+    const k = new Array(cs.length).fill(NaN), d = new Array(cs.length).fill(NaN);
+    let K = 50, D = 50;
+    for (let i = p - 1; i < cs.length; i++) {
+      let hh = -Infinity, ll = Infinity;
+      for (let j = i - p + 1; j <= i; j++) { hh = Math.max(hh, cs[j].h); ll = Math.min(ll, cs[j].l); }
+      const rsv = hh === ll ? 50 : (cs[i].c - ll) / (hh - ll) * 100;
+      K = K * 2 / 3 + rsv / 3; D = D * 2 / 3 + K / 3;
+      k[i] = K; d[i] = D;
+    }
+    return { k, d };
+  },
+
+  /* OBV 能量潮:收漲加量、收跌減量,看資金是流進還是流出 */
+  obv(cs) {
+    let s = 0;
+    return cs.map((k, i) => (s += i === 0 ? 0 : k.c > cs[i - 1].c ? k.v : k.c < cs[i - 1].c ? -k.v : 0));
+  },
+
+  /* 震盪指數 CHOP:> 61.8 盤整(網格舒服)、< 38.2 趨勢(網格危險) */
+  chop(cs, p = 14) {
+    const out = new Array(cs.length).fill(NaN);
+    const tr = cs.map((k, i) => i === 0 ? k.h - k.l : Math.max(k.h - k.l, Math.abs(k.h - cs[i - 1].c), Math.abs(k.l - cs[i - 1].c)));
+    for (let i = p; i < cs.length; i++) {
+      let s = 0, hh = -Infinity, ll = Infinity;
+      for (let j = i - p + 1; j <= i; j++) { s += tr[j]; hh = Math.max(hh, cs[j].h); ll = Math.min(ll, cs[j].l); }
+      out[i] = hh > ll ? 100 * Math.log10(s / (hh - ll)) / Math.log10(p) : NaN;
+    }
+    return out;
+  },
+
+  /* 轉折點:前後各 w 根都比它低的是高點、都比它高的是低點(最後 w 根還無法確認) */
+  pivots(cs, w = 4) {
+    const hi = [], lo = [];
+    for (let i = w; i < cs.length - w; i++) {
+      let isH = true, isL = true;
+      for (let j = i - w; j <= i + w; j++) {
+        if (j === i) continue;
+        if (cs[j].h >= cs[i].h) isH = false;
+        if (cs[j].l <= cs[i].l) isL = false;
+      }
+      if (isH) hi.push(i);
+      if (isL) lo.push(i);
+    }
+    return { hi, lo };
+  },
+
   /* 最新一筆在最近 n 筆裡排第幾百分位(0 = 最低,100 = 最高) */
   pctRank(a, n) {
     const w = a.slice(-n).filter(x => !isNaN(x));
