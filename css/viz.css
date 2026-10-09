@@ -339,3 +339,7 @@ input.slider:focus { outline: none; }
 .chip-doc summary .tk-rn { flex: 1; min-width: 0; }
 .chip-doc .tk-test { margin: 0 0 8px; }
 .tabbar .tab span:last-child { white-space: nowrap; }
+
+/* ---------- 成交量均量線 ---------- */
+.ch-vavg { stroke: var(--warn); stroke-width: 1; fill: none; opacity: .9; }
+.lg-vavg { background: var(--warn); }

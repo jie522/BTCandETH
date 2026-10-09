@@ -21,7 +21,7 @@ const Viz = {
   },
 
   /* ---------- K 線圖 ----------
-   * o = { cs, overlays:[{d, cls, name}], band:{lo,hi}, lines:[{y, cls, label, range}], h, year, tipExtra(i) } */
+   * o = { cs, overlays:[{d, cls, name}], band:{lo,hi}, lines:[{y, cls, label, range}], volAvg:[均量], h, year, tipExtra(i) } */
   candles(o) {
     const cs = o.cs, n = cs.length;
     if (!n) return '';
@@ -54,6 +54,14 @@ const Viz = {
       const y1 = Y(Math.max(k.o, k.c)), y2 = Y(Math.min(k.o, k.c));
       g += `<rect class="${cls}" x="${(x - bw / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.8, y2 - y1).toFixed(1)}"/>`;
     });
+    if (o.volAvg) {        // 成交量區的均量線
+      let d = '', pen = false;
+      o.volAvg.forEach((v, i) => {
+        if (isNaN(v)) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + (vy0 - Math.min(VH, v / vmax * VH)).toFixed(1); pen = true;
+      });
+      g += `<path class="ch-vavg" d="${d}"/>`;
+    }
     (o.overlays || []).forEach(s => {
       let d = '', pen = false;
       s.d.forEach((v, i) => {
@@ -77,7 +85,8 @@ const Viz = {
         const k = cs[i], chg = (k.c / k.o - 1) * 100;
         return `<b>${fmt.date(k.t, true)}${o.intraday ? ' ' + new Date(k.t).toTimeString().slice(0, 5) : ''}</b>
           <span>開 ${fmt.price(k.o)} 高 ${fmt.price(k.h)}</span><span>低 ${fmt.price(k.l)} 收 <em class="${fmt.cls(chg)}">${fmt.price(k.c)}</em></span>
-          <span class="${fmt.cls(chg)}">${fmt.pct(chg)}</span>${o.tipExtra ? o.tipExtra(i) : ''}`;
+          <span class="${fmt.cls(chg)}">${fmt.pct(chg)}</span>
+          <span class="tip-ma">量 ${fmt.big(k.v)}${o.volAvg && o.volAvg[i] > 0 ? ` · 均量的 ${(k.v / o.volAvg[i]).toFixed(1)} 倍` : ''}</span>${o.tipExtra ? o.tipExtra(i) : ''}`;
       },
     };
     return `<div class="ichart" data-cid="${cid}"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg><i class="xh"></i><div class="tip"></div></div>`;

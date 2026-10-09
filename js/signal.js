@@ -14,6 +14,8 @@ const Signal = {
   analyze(cs, funding, fee) {
     const c = cs.map(k => k.c), price = Ind.last(c);
     const ma20 = Ind.last(Ind.sma(c, 20)), ma50 = Ind.last(Ind.sma(c, 50)), ma200 = Ind.last(Ind.sma(c, 200));
+    const E8 = Ind.ema(c, 8), E21 = Ind.ema(c, 21), E55 = Ind.ema(c, 55), E200 = Ind.ema(c, 200);
+    const vol = this.volLevel(cs);
     const rsi = Ind.last(Ind.rsi(c, 14));
     const atrV = Ind.last(Ind.atr(cs, 14)), atrPct = atrV / price * 100;
     const A = Ind.adx(cs, 14), adx = Ind.last(A.adx);
@@ -69,6 +71,7 @@ const Signal = {
       price, ma20, ma50, ma200, rsi, adx, atrPct, atrRank, atrMed90, bwRank, funding,
       pdi: A.pdi, mdi: A.mdi, score, dir, why, strength, reasons, sug,
       ma: { ma20: Ind.sma(c, 20), ma50: Ind.sma(c, 50), ma200: Ind.sma(c, 200) },
+      ema: { e8: E8, e21: E21, e55: E55, e200: E200 }, e8: Ind.last(E8), e21: Ind.last(E21), e55: Ind.last(E55), vol,
     };
   },
 
@@ -94,10 +97,22 @@ const Signal = {
   LEAN: {
     dmi: (pdi, mdi) => pdi - mdi > 3 ? 'up' : pdi - mdi < -3 ? 'down' : 'flat',
     ma: (p, m50, m200) => p > m50 && m50 > m200 ? 'up' : p < m50 && m50 < m200 ? 'down' : 'flat',
+    ema: (p, e8, e21, e55) => p > e8 && e8 > e21 && e21 > e55 ? 'up' : p < e8 && e8 < e21 && e21 < e55 ? 'down' : 'flat',
     macd: h => h > 0 ? 'up' : 'down',
     rsi: r => r >= 55 ? 'up' : r <= 45 ? 'down' : 'flat',
     pb: pb => pb >= 85 ? 'up' : pb <= 15 ? 'down' : 'flat',        // 實測幣圈貼軌多半延續,所以順勢投票
     kd: (k, d) => k - d > 1 ? 'up' : k - d < -1 ? 'down' : 'flat',
+  },
+
+  /* ---------- 成交量水位 ----------
+   * 20 根均量在最近 120 根裡的排名(不含還沒收完的最新一根),加上昨天的量比。
+   * 實測跟波動狀態類似:量能低檔時網格較容易被突破打出區間、高檔時較安全(大部分資訊跟 ATR 排名重疊) */
+  volLevel(cs, upto = cs.length - 1) {
+    const s = cs.slice(Math.max(0, upto - 160), upto + 1), n = s.length;
+    if (n < 30) return { rank: NaN, vr: NaN, avg: NaN, last: NaN, today: NaN };
+    const v = s.map(k => k.v), v20 = Ind.sma(v, 20);
+    const closed = v20.slice(0, n - 1);                  // 最新一根還在累積,不算
+    return { rank: Ind.pctRank(closed, 120), avg: v20[n - 2], last: v[n - 2], vr: v[n - 2] / v20[n - 2], today: v[n - 1], v20 };
   },
 
   /* 轉折點的確認根數:前後各 w 根 */
@@ -257,6 +272,15 @@ const Signal = {
       grid: ['多頭排列 → 做多網格', '空頭排列 → 做空網格', '糾結 → 中性網格,資金放小', '方向不要逆著週線開'],
       trap: '均線最落後,轉折後要好幾天才翻;盤整時價格在均線上下來回穿,會一直給假訊號。',
       test: '方向訊號出現的日子,跟著方向開網格 14 天內在輸的那邊被打出區間 11 ~ 15%;開反方向 18 ~ 27%;開中性(兩邊都會輸)48 ~ 51%。多頭排列後 14 天平均漲幅 ETH +2.1%、BTC +1.7%。' },
+    { key: 'ema', name: 'EMA 排列(8 / 21 / 55)', stars: 4, vote: true,
+      role: '比 SMA 快的趨勢判斷,短中線方向',
+      why: 'EMA 給最近的價格較大權重,轉向比 SMA 快;實測 EMA 8 / 21 / 55 的多空排列對 ETH 的區分力比 SMA 50 / 200 好。長週期的 EMA 50 / 200 則跟 SMA 幾乎一樣,沒有多出資訊。',
+      what: '指數移動平均(EMA)。看價格與 EMA 8、21、55 三條線的上下順序:由上到下依序排好 = 多頭排列。',
+      calc: 'EMA = 今天收盤 × k + 昨天 EMA × (1 − k),k = 2 ÷ (N + 1)。',
+      read: ['價 > EMA8 > EMA21 > EMA55:多頭排列(短中線同向上)', '價 < EMA8 < EMA21 < EMA55:空頭排列', '其他順序:整理 / 轉折中', '價格站上 / 跌破 EMA21 常被當短線多空分界'],
+      grid: ['EMA 多頭排列 + SMA 多頭排列 → 做多網格把握度最高', 'EMA 先翻空、SMA 還是多頭 → 趨勢可能在轉弱,資金放小', '跌破 EMA21 時,做多網格的下限要留在 EMA55 下方'],
+      trap: 'EMA 反應快,盤整時也翻得快,來回假訊號比 SMA 多;要搭配 ADX、SMA 一起看。',
+      test: 'EMA 8 / 21 / 55 多頭排列後 14 天平均 ETH +1.9%、BTC +2.1%,空頭排列 ETH −0.9%、BTC +0.7%(SMA 50 / 200 空頭排列 ETH 反而 +0.4%);多頭排列時做多網格沒被跌破 ETH 86%、BTC 91%。價格在 EMA21 之上 ETH +2.0%,之下 −0.1%。EMA 50 / 200 排列跟 SMA 50 / 200 結果幾乎相同。' },
     { key: 'dmi', name: 'ADX 趨勢強度(DMI)', stars: 4, vote: true,
       role: '看趨勢強不強、哪一方占優',
       why: '+DI / −DI 誰在上面有方向參考價值;但實測推翻了「ADX 低 = 盤整 = 網格最安全」的說法。',
@@ -275,6 +299,15 @@ const Signal = {
       grid: ['帶寬收窄時別開窄的高槓桿網格,突破後很快就出區間', '貼上軌不要急著做空網格:實測多半繼續漲', '帶寬大時格子可以放寬,每格賺多一點'],
       trap: '教科書說「碰上軌超買、碰下軌超賣」,在幣圈實測剛好相反,價格常貼著軌道一路走(騎軌)。',
       test: '貼上軌後 14 天平均 ETH +2.2%、BTC +1.2%,貼下軌後 ETH −0.1%、BTC +0.7%(所以這裡改成順勢投票)。帶寬最窄的 1/5 開網格,14 天內被打出區間 ETH 69%、BTC 60%;最寬的 1/5 只有 36%、40%。' },
+    { key: 'vlevel', name: '成交量水位(均量排名)', stars: 3, vote: false,
+      role: '市場熱不熱;跟波動狀態一起看',
+      why: '量能低迷時常是突破前的安靜期,網格容易被打出區間;量能高檔時之後多半降溫。但這個資訊大部分已經包含在波動狀態(ATR 排名)裡,所以排在後面、不投票。',
+      what: '20 根均量在最近 120 根裡排第幾百分位(0 = 最冷清、100 = 最熱絡),以及昨天的成交量是 20 根均量的幾倍(量比)。',
+      calc: '均量 = 最近 20 根已收盤 K 線的成交量平均;排名只用已收盤的 K 線,今天還在累積的量不算。',
+      read: ['均量排名 < 20:量能低迷', '均量排名 > 80:量能熱絡', '量比 > 2:爆量;< 0.5:量縮', '價漲量增、價跌量縮 = 健康的上漲'],
+      grid: ['量能低迷 + 波動壓縮:最容易突破的組合,不要開窄的中性網格', '量能熱絡 + 波動高檔:開網格相對安全,格子可以放寬', '單日爆量本身不是方向訊號,不要只因為爆量就換方向'],
+      trap: '單日量比(爆量、量縮)實測沒有預測力;有用的是「均量的水位」。成交量只看 Binance 一家,不是全市場。',
+      test: '均量排名最高 1/5 時,中性網格 14 天沒被打出區間 ETH 63%、BTC 65%;最低 1/5 只有 41%、46%。但在同樣的波動狀態下再分量能,差距只剩 0 ~ 9 個百分點(大部分和 ATR 重疊)。單日量比五個區間的表現幾乎一樣;爆量上漲後 BTC +5.4%、ETH +0.5%(樣本各 30 天左右,不一致)。' },
     { key: 'rsi', name: 'RSI 相對強弱', stars: 3, vote: true,
       role: '動能方向;過熱不等於要跌',
       why: 'RSI 在 55 以上 / 45 以下有一點順勢的參考價值;但「70 以上過熱就會跌」在幣圈不成立。',
@@ -377,6 +410,11 @@ const Signal = {
     else if (last.pb <= 15) add('down', `%B ${last.pb.toFixed(0)},貼近布林下軌:弱勢(實測多半延續)`);
     if (!isNaN(last.bwRank) && last.bwRank <= 25) add('warn', `布林帶寬只有近期 ${last.bwRank.toFixed(0)} 百分位,收窄後常有突破`);
     if (Math.abs(last.dev) > devR * 0.6) add('warn', `離 MA200 ${fmt.pct(last.dev, 1)},離長均線很遠,回檔時幅度可能較大`);
+    if (L.ema === 'up') add('up', `EMA 8 / 21 / 55 多頭排列(短中線同向上)`);
+    else if (L.ema === 'down') add('down', `EMA 8 / 21 / 55 空頭排列(短中線同向下)`);
+    else add('flat', `EMA 8 / 21 / 55 交錯,價格${last.price > last.e21 ? '在' : '跌破'} EMA21(${n0(last.e21)})${last.price > last.e21 ? '之上' : ''}`);
+    const vl = last.vlevel;
+    if (!isNaN(vl.rank) && vl.rank < 20) add('warn', `量能低迷(均量排名 ${vl.rank.toFixed(0)}):跟波動壓縮一樣,之後較容易突破`);
     const st = last.x.struct;
     add(st.lean, `K 線結構:${st.name}(${st.text})`);
 
@@ -423,6 +461,7 @@ const Signal = {
   techHistory(cs, tf, count) {
     const c = cs.map(k => k.c);
     const ma50 = Ind.sma(c, 50), ma200 = Ind.sma(c, 200), M = Ind.macd(c), rsi = Ind.rsi(c, 14);
+    const e8 = Ind.ema(c, 8), e21 = Ind.ema(c, 21), e55 = Ind.ema(c, 55);
     const A = Ind.adx(cs, 14), B = Ind.boll(c, 20, 2), atr = Ind.atr(cs, 14), KD = Ind.kd(cs), obv = Ind.obv(cs);
     const atrP = atr.map((v, i) => v / c[i] * 100), n = cs.length;
     let idx = cs.map((_, i) => i), tOf = i => cs[i].t;
@@ -434,7 +473,7 @@ const Signal = {
     return idx.slice(-(count || 30)).map(i => {
       const p = c[i], pb = (p - B.lo[i]) / (B.up[i] - B.lo[i]) * 100;
       const lean = {
-        dmi: this.LEAN.dmi(A.pdiA[i], A.mdiA[i]), ma: this.LEAN.ma(p, ma50[i], ma200[i]),
+        dmi: this.LEAN.dmi(A.pdiA[i], A.mdiA[i]), ma: this.LEAN.ma(p, ma50[i], ma200[i]), ema: this.LEAN.ema(p, e8[i], e21[i], e55[i]),
         macd: this.LEAN.macd(M.hist[i]), rsi: this.LEAN.rsi(rsi[i]), pb: this.LEAN.pb(pb),
       };
       const cnt = { up: 0, down: 0, flat: 0 };
@@ -445,6 +484,7 @@ const Signal = {
         pb, bwRank: Ind.pctRank(B.bw.slice(0, i + 1), 120), atrPct: atrP[i], atrRank: Ind.pctRank(atrP.slice(0, i + 1), 120),
         k: KD.k[i], d: KD.d[i], obv: obv[i], lean, cnt, net: cnt.up - cnt.down,
         // 不投票的參考指標(K 線型態看已收盤那根:最新一根還沒收完就看前一根)
+        e8: e8[i], e21: e21[i], e55: e55[i], vlevel: this.volLevel(cs, i), vol: cs[i].v,
         x: { struct: this.structure(cs, tf, i), vol: this.volume(cs, i), kd: this.LEAN.kd(KD.k[i], KD.d[i]), candle: this.candle(cs, i === n - 1 ? i - 1 : i) },
       };
     });
@@ -467,6 +507,21 @@ const Signal = {
     out.push({ key: 'atr', vote: false, group: 'tech', label: '波動狀態(ATR 排名)', v: rk, min: 0, max: 100, text: isNaN(rk) ? '—' : rk.toFixed(0), ticks: [20, 80],
       lean: 'flat', leanText: rk < 20 ? '壓縮' : rk > 80 ? '高檔' : '正常',
       note: (rk < 20 ? '實測壓縮後常突破:區間用正常波動放寬,別開窄的高槓桿網格' : rk > 80 ? '實測波動高檔後多半回落:開網格相對安全' : '波動在正常範圍') + ` · ATR ${an.atrPct.toFixed(2)}%`,
+      zones: [{ to: 20, cls: 'z-warn' }, { to: 80, cls: 'z-mid' }, { to: 100, cls: 'z-good' }] });
+
+    /* EMA 排列 */
+    const le = this.LEAN.ema(an.price, an.e8, an.e21, an.e55);
+    const d21 = (an.price / an.e21 - 1) * 100;
+    out.push({ key: 'ema', group: 'tech', label: 'EMA 排列(離 EMA21)', v: d21, min: -devR / 2, max: devR / 2, text: fmt.pct(d21, 1), ticks: [0],
+      lean: le, leanText: { up: '多頭排列', down: '空頭排列', flat: '整理中' }[le],
+      note: `EMA8 ${fmt.n(an.e8, 0)} · EMA21 ${fmt.n(an.e21, 0)} · EMA55 ${fmt.n(an.e55, 0)}${an.price > an.e21 ? ' · 站上 EMA21' : ' · 跌破 EMA21'}`,
+      zones: [{ to: 0, cls: 'z-dn' }, { to: devR / 2, cls: 'z-up' }] });
+
+    /* 成交量水位(不投票) */
+    const V = an.vol;
+    if (V && !isNaN(V.rank)) out.push({ key: 'vlevel', vote: false, group: 'tech', label: '成交量水位(均量排名)', v: V.rank, min: 0, max: 100, text: V.rank.toFixed(0), ticks: [20, 80],
+      lean: 'flat', leanText: V.rank < 20 ? '量能低迷' : V.rank > 80 ? '量能熱絡' : '正常',
+      note: `上一根量 ${fmt.big(V.last)} · 20 根均量 ${fmt.big(V.avg)} · 量比 ${V.vr.toFixed(2)}${V.rank < 20 ? ' · 實測低量期之後較容易突破' : V.rank > 80 ? ' · 實測量能高檔時網格較安全' : ''}`,
       zones: [{ to: 20, cls: 'z-warn' }, { to: 80, cls: 'z-mid' }, { to: 100, cls: 'z-good' }] });
 
     /* DMI */

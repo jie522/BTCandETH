@@ -6,7 +6,8 @@ const App = {
   loading: false,
   err: '',
   TFS: [['8h', '8 小時'], ['1d', '日線'], ['1w', '週線']],
-  tier: 'mid',              // 建議參數目前看的風險等級
+  tier: 'mid',
+  maKind: 'sma',            // K 線圖的均線:sma | ema              // 建議參數目前看的風險等級
 
   sym() { return Market.SYMS[Store.settings.symbol]; },
 
@@ -55,6 +56,7 @@ const App = {
     const k = el.dataset.seg, v = el.dataset.v;
     if (k === 'tf') { this.pickTf(v); return; }
     if (k === 'tech-tf') { this.techTf = v; this.renderTech(); return; }
+    if (k === 'ma-kind') { this.maKind = v; this.renderMarket(); return; }
   },
 
   /* ---------- 小元件 ---------- */
@@ -301,7 +303,7 @@ const App = {
       <div class="ind-group"><span>技術指標</span><small>${tn} K 線 · 依實測重要度排序</small></div>
       ${items.map(m => this.meterRow(m)).join('')}
       <button type="button" class="tech-more" data-act="tech"><span><b>技術面詳解</b><small>日線 / 週線建議 · 每日節點走勢 · 詳細說明</small></span><i>›</i></button>
-      <p class="fine in">投票的是 5 項實測有順勢參考價值的指標(均線、ADX、布林、RSI、MACD);波動狀態不投票,但對網格存活影響最大。</p>
+      <p class="fine in">投票的是 6 項實測有順勢參考價值的指標(均線、EMA、ADX、布林、RSI、MACD);波動狀態、成交量水位不投票,但對網格存活影響最大。</p>
     </div>`;
   },
 
@@ -348,21 +350,25 @@ const App = {
     </div>`;
   },
 
-  /* K 線分頁 */
+  /* K 線分頁:均線可切 SMA 20 / 50 / 200 或 EMA 8 / 21 / 55,成交量區畫 20 根均量 */
   klineHtml() {
-    const { tk, cs, an } = this.data, tn = this.tfName(this.tf);
+    const { tk, cs, an } = this.data, tn = this.tfName(this.tf), ema = this.maKind === 'ema';
     const view = cs.slice(-90), off = cs.length - view.length, sug = an.sug;
-    const ma = k => an.ma[k].slice(off);
+    const ma = k => an.ma[k].slice(off), em = k => an.ema[k].slice(off);
+    const vAvg = Ind.sma(cs.map(k => k.v), 20).slice(off);
+    const lines = ema ? [['e8', 'ch-ma20', 'EMA8'], ['e21', 'ch-ma50', 'EMA21'], ['e55', 'ch-ma200', 'EMA55']] : [['ma20', 'ch-ma20', 'MA20'], ['ma50', 'ch-ma50', 'MA50'], ['ma200', 'ch-ma200', 'MA200']];
+    const src = ema ? em : ma;
     return `<div class="card">
       <div class="card-h"><span class="section-title in">K 線 · ${tn}</span><span class="hint">按住圖左右滑動看數值</span></div>
       ${this.seg('tf', this.TFS, this.tf)}
-      <div class="legend"><i class="lg lg-ma20"></i>MA20 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200 <i class="lg lg-band"></i>建議區間 <i class="lg lg-sup"></i>支撐 <i class="lg lg-res"></i>壓力</div>
+      ${this.seg('ma-kind', [['sma', '簡單均線 SMA'], ['ema', '指數均線 EMA']], this.maKind)}
+      <div class="legend">${lines.map(([, c, t], i) => `<i class="lg lg-${['ma20', 'ma50', 'ma200'][i]}"></i>${t}`).join(' ')} <i class="lg lg-band"></i>建議區間 <i class="lg lg-sup"></i>支撐 <i class="lg lg-res"></i>壓力 <i class="lg lg-vavg"></i>均量</div>
       ${Viz.candles({
         cs: view, h: 280, year: this.tf === '1w', intraday: this.tf === '8h',
-        overlays: [{ d: ma('ma20'), cls: 'ch-ma20' }, { d: ma('ma50'), cls: 'ch-ma50' }, { d: ma('ma200'), cls: 'ch-ma200' }],
-        band: { lo: sug.lower, hi: sug.upper },
+        overlays: lines.map(([k, c]) => ({ d: src(k), cls: c })),
+        band: { lo: sug.lower, hi: sug.upper }, volAvg: vAvg,
         lines: [{ y: tk.price, cls: 'ch-now', label: fmt.n(tk.price, 0) }].concat(this.srLines(cs, this.tf, tk.price)),
-        tipExtra: i => `<span class="tip-ma">MA50 ${fmt.n(ma('ma50')[i], 0)} · MA200 ${fmt.n(ma('ma200')[i], 0)}</span>`,
+        tipExtra: i => `<span class="tip-ma">${lines.slice(1).map(([k, , t]) => `${t} ${fmt.n(src(k)[i], 0)}`).join(' · ')}</span>`,
       })}
     </div>`;
   },
@@ -388,6 +394,16 @@ const App = {
       series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }, { d: N.map(q => q.ma50), cls: 'ch-ma50' }, { d: N.map(q => q.ma200), cls: 'ch-ma200' }],
       lines: [], legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-ma50"></i>MA50 <i class="lg lg-ma200"></i>MA200',
       tip: q => `<span>MA50 ${fmt.n(q.ma50, 0)} · MA200 ${fmt.n(q.ma200, 0)}</span><span>離 MA200 ${fmt.pct(q.dev, 1)}</span>` },
+    ema: { v: q => (q.price / q.e21 - 1) * 100, f: v => fmt.pct(v, 1), lean: q => `EMA21 ${fmt.n(q.e21, 0)} · EMA55 ${fmt.n(q.e55, 0)}`,
+      series: N => [{ d: N.map(q => q.price), cls: 'ch-price' }, { d: N.map(q => q.e8), cls: 'ch-ma20' }, { d: N.map(q => q.e21), cls: 'ch-ma50' }, { d: N.map(q => q.e55), cls: 'ch-ma200' }],
+      lines: [], legend: '<i class="lg lg-price"></i>價格 <i class="lg lg-ma20"></i>EMA8 <i class="lg lg-ma50"></i>EMA21 <i class="lg lg-ma200"></i>EMA55(數值 = 離 EMA21)',
+      tip: q => `<span>EMA8 ${fmt.n(q.e8, 0)} · EMA21 ${fmt.n(q.e21, 0)}</span><span>EMA55 ${fmt.n(q.e55, 0)}</span>` },
+    vlevel: { v: q => q.vlevel.rank, f: v => isNaN(v) ? '—' : v.toFixed(0),
+      txt: q => (q.vlevel.rank < 20 ? '低迷 ' : q.vlevel.rank > 80 ? '熱絡 ' : '正常 ') + (isNaN(q.vlevel.rank) ? '—' : q.vlevel.rank.toFixed(0)),
+      lean: q => `量比 ${isNaN(q.vlevel.vr) ? '—' : q.vlevel.vr.toFixed(2)} · 20 根均量 ${fmt.big(q.vlevel.avg)}`,
+      series: N => [{ d: N.map(q => q.vol), cls: 'ch-eq' }, { d: N.map(q => q.vlevel.avg), cls: 'ch-dea' }], lines: [], yfmt: v => fmt.big(v),
+      legend: '<i class="lg lg-eq"></i>成交量 <i class="lg lg-dea"></i>20 根均量(右上數字 = 均量在近 120 根的排名)',
+      tip: q => `<span>量 ${fmt.big(q.vol)} · 均量 ${fmt.big(q.vlevel.avg)}</span><span>均量排名 ${isNaN(q.vlevel.rank) ? '—' : q.vlevel.rank.toFixed(0)}</span>` },
     dmi: { v: q => q.adx, f: v => v.toFixed(0), lean: q => `+DI ${q.pdi.toFixed(0)} / −DI ${q.mdi.toFixed(0)}`,
       series: N => [{ d: N.map(q => q.adx), cls: 'ch-eq' }, { d: N.map(q => q.pdi), cls: 'ch-pdi' }, { d: N.map(q => q.mdi), cls: 'ch-mdi' }],
       lines: [20, 35], legend: '<i class="lg lg-eq"></i>ADX <i class="lg lg-pdi"></i>+DI <i class="lg lg-mdi"></i>−DI',
@@ -448,20 +464,20 @@ const App = {
     const dn = last.net - prev.net;
     const voteCard = `<div class="card">
       <div class="card-h"><span class="section-title in">技術面每日投票</span><span class="hint">按住滑動看每${unit}</span></div>
-      ${Viz.cols({ vals: N.map(q => q.net), max: 5, x: [lbl(N[0]), lbl(last)] }, i => {
+      ${Viz.cols({ vals: N.map(q => q.net), max: 6, x: [lbl(N[0]), lbl(last)] }, i => {
         const q = N[i];
         return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span><span><em class="up">偏多 ${q.cnt.up}</em> · 中性 ${q.cnt.flat} · <em class="down">偏空 ${q.cnt.down}</em></span><span>淨值 ${sgn(q.net)}</span>`;
       })}
       <p class="tk-sum">最新 <b class="${fmt.cls(last.net)}">${sgn(last.net)}</b>(偏多 ${last.cnt.up} · 中性 ${last.cnt.flat} · 偏空 ${last.cnt.down});
         ${k} ${unit}前 ${sgn(prev.net)} → <b>${dn >= 2 ? '技術面轉強' : dn <= -2 ? '技術面轉弱' : '大致持平'}</b></p>
-      <p class="fine in">每${unit}一個節點,均線、ADX、布林、RSI、MACD 5 項各投一票(實測有順勢參考價值的才投),淨值 = 偏多票 − 偏空票。</p>
+      <p class="fine in">每${unit}一個節點,均線、EMA、ADX、布林、RSI、MACD 6 項各投一票(實測有順勢參考價值的才投),淨值 = 偏多票 − 偏空票。</p>
     </div>`;
 
     /* 重要度排名總覽 */
     const stars = s => '★'.repeat(s) + '<span class="st-off">' + '★'.repeat(5 - s) + '</span>';
     const rank = `<div class="card">
       <div class="section-title in">重要度排名(依 5 年 ETH / BTC 日線實測)</div>
-      <p class="tk-logic">先看<b>波動狀態</b>(會不會被打出區間)→ 再看<b>方向</b>(均線、ADX、布林、RSI、MACD)→ 文章常見的<b>結構、支撐壓力、量價、KD、K 線型態</b>只當參考:實測對接下來 14 天幾乎沒有預測力</p>
+      <p class="tk-logic">先看<b>波動狀態</b>(會不會被打出區間)→ 再看<b>方向</b>(均線、EMA、ADX、布林、RSI、MACD)→ 文章常見的<b>結構、支撐壓力、量價、KD、K 線型態</b>只當參考:實測對接下來 14 天幾乎沒有預測力</p>
       ${Signal.TECH.map((d, i) => {
         const ln = lnOf(d), l = ln ? ln(last) : null, V = this.TECH_VIEW[d.key];
         const val = V.txt ? V.txt(last, SR) : V.f(V.v(last));
@@ -497,7 +513,7 @@ const App = {
         <div class="tk-lean"><span class="lean-chip ln-${cl}">${d.vote ? L[cl] + ' · ' : ln ? '參考 · ' : ''}${V.lean(last, SR)}</span>${d.vote ? '' : '<span class="nv-tag">不投票</span>'}<span class="tk-role">${d.role}</span></div>
         <div class="legend">${V.legend}</div>
         ${Viz.line({ series: V.series(N), lines: V.lines.map(y => ({ y, cls: 'ch-th', label: String(y) })).concat(hl), h: 150, x: [lbl(N[0]), lbl(last)],
-          yfmt: V.lines.length || V.noAxis ? () => '' : undefined },
+          yfmt: V.yfmt || (V.lines.length || V.noAxis ? () => '' : undefined) },
           i => { const q = N[i], l = ln ? ln(q) : null; return `<b>${lbl(q)}</b><span>價格 ${fmt.price(q.price)}</span>${V.tip(q)}${l ? `<span class="${lc(l)}">${L[l]}</span>` : ''}`; })}
         ${strip}
         <ul class="tk-trend">${lines.map(t => `<li>${t}</li>`).join('')}</ul>

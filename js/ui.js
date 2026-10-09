@@ -17,6 +17,11 @@ const fmt = {
     if (x == null || isNaN(x)) return '—';
     return (sign && x > 0 ? '+' : '') + fmt.n(x, d);
   },
+  /* 成交量這種大數字:萬 / 億 */
+  big(x) {
+    if (x == null || isNaN(x)) return '—';
+    return x >= 1e8 ? (x / 1e8).toFixed(2) + ' 億' : x >= 1e4 ? (x / 1e4).toFixed(1) + ' 萬' : fmt.n(x, 0);
+  },
   cls(x) { return x > 0 ? 'up' : x < 0 ? 'down' : ''; },
   date(t, yr) { const d = new Date(t); return (yr ? d.getFullYear() + '/' : '') + (d.getMonth() + 1) + '/' + d.getDate(); },
 };
